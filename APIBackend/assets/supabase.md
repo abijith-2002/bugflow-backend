@@ -2,6 +2,44 @@
 
 This document describes the Supabase database schema and configuration required for the BugFlow bug tracking application.
 
+## Configuration Status
+
+✅ **Environment Variables**: Configured in `.env` file
+✅ **Connection**: Supabase client configured and working
+⚠️ **Database Schema**: Requires manual setup (see instructions below)
+
+## Current Environment Configuration
+
+The following environment variables are configured:
+
+- `SUPABASE_URL`: https://zyanjhrlcvcrohfxnlhz.supabase.co
+- `SUPABASE_KEY`: Configured with service role key
+- `JWT_SECRET_KEY`: Configured for API authentication
+- `JWT_ALGORITHM`: HS256
+- `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`: 30
+- `JWT_REFRESH_TOKEN_EXPIRE_DAYS`: 7
+
+## Database Setup Instructions
+
+**IMPORTANT**: The database tables need to be created manually in your Supabase dashboard.
+
+### Step 1: Access Supabase Dashboard
+1. Go to https://supabase.com/dashboard
+2. Select your project: `zyanjhrlcvcrohfxnlhz`
+3. Navigate to the SQL Editor
+
+### Step 2: Execute Database Setup
+1. Copy the contents of `setup_database.sql` (located in the same directory as this file)
+2. Paste the SQL script into the Supabase SQL Editor
+3. Click "Run" to execute the script
+
+This will create:
+- All required tables (users, projects, bugs, etc.)
+- Proper indexes for performance
+- Row Level Security policies
+- Triggers for timestamp updates
+- Sample admin user and project
+
 ## Database Schema
 
 ### Users Table
@@ -105,165 +143,161 @@ CREATE TABLE audit_logs (
 
 ## Indexes
 
-```sql
--- Users table indexes
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_role ON users(role);
-CREATE INDEX idx_users_is_active ON users(is_active);
+All necessary indexes are created automatically by the setup script for optimal performance:
 
--- Projects table indexes
-CREATE INDEX idx_projects_owner_id ON projects(owner_id);
-CREATE INDEX idx_projects_status ON projects(status);
-
--- Project members table indexes
-CREATE INDEX idx_project_members_project_id ON project_members(project_id);
-CREATE INDEX idx_project_members_user_id ON project_members(user_id);
-
--- Bugs table indexes
-CREATE INDEX idx_bugs_project_id ON bugs(project_id);
-CREATE INDEX idx_bugs_reported_by ON bugs(reported_by);
-CREATE INDEX idx_bugs_assigned_to ON bugs(assigned_to);
-CREATE INDEX idx_bugs_status ON bugs(status);
-CREATE INDEX idx_bugs_priority ON bugs(priority);
-
--- Bug comments table indexes
-CREATE INDEX idx_bug_comments_bug_id ON bug_comments(bug_id);
-CREATE INDEX idx_bug_comments_user_id ON bug_comments(user_id);
-
--- Notifications table indexes
-CREATE INDEX idx_notifications_user_id ON notifications(user_id);
-CREATE INDEX idx_notifications_is_read ON notifications(is_read);
-CREATE INDEX idx_notifications_type ON notifications(type);
-
--- Audit logs table indexes
-CREATE INDEX idx_audit_logs_user_id ON audit_logs(user_id);
-CREATE INDEX idx_audit_logs_resource_type ON audit_logs(resource_type);
-CREATE INDEX idx_audit_logs_resource_id ON audit_logs(resource_id);
-CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at);
-```
-
-## Triggers for Updated At
-
-```sql
--- Function to update updated_at timestamp
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ language 'plpgsql';
-
--- Triggers for updated_at
-CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_projects_updated_at BEFORE UPDATE ON projects
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_bugs_updated_at BEFORE UPDATE ON bugs
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_bug_comments_updated_at BEFORE UPDATE ON bug_comments
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_notifications_updated_at BEFORE UPDATE ON notifications
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-```
+- Users: email, role, is_active
+- Projects: owner_id, status
+- Project members: project_id, user_id
+- Bugs: project_id, reported_by, assigned_to, status, priority
+- Bug comments: bug_id, user_id
+- Notifications: user_id, is_read, type
+- Audit logs: user_id, resource_type, resource_id, created_at
 
 ## Row Level Security (RLS) Policies
 
-```sql
--- Enable RLS on all tables
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE project_members ENABLE ROW LEVEL SECURITY;
-ALTER TABLE bugs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE bug_comments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
-ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+RLS is enabled on all tables with appropriate policies:
 
--- Users can view and update their own profile
-CREATE POLICY "Users can view own profile" ON users
-    FOR SELECT USING (auth.uid() = id);
+- Users can view and update their own profiles
+- Users can view projects they own or are members of
+- Users can view bugs in their accessible projects
+- Users can view and update their own notifications
 
-CREATE POLICY "Users can update own profile" ON users
-    FOR UPDATE USING (auth.uid() = id);
+## API Integration
 
--- Project access policies
-CREATE POLICY "Users can view projects they own or are members of" ON projects
-    FOR SELECT USING (
-        auth.uid() = owner_id OR 
-        auth.uid() IN (SELECT user_id FROM project_members WHERE project_id = projects.id)
-    );
+### FastAPI Configuration
+The FastAPI application is configured to connect to Supabase using:
 
--- Bug access policies
-CREATE POLICY "Users can view bugs in their projects" ON bugs
-    FOR SELECT USING (
-        project_id IN (
-            SELECT id FROM projects WHERE 
-            owner_id = auth.uid() OR 
-            id IN (SELECT project_id FROM project_members WHERE user_id = auth.uid())
-        )
-    );
+1. **Database Connection**: `src/core/database.py`
+   - Initializes Supabase client with environment variables
+   - Provides connection testing functionality
+   - Offers database client dependency for FastAPI routes
 
--- Notification policies
-CREATE POLICY "Users can view own notifications" ON notifications
-    FOR SELECT USING (auth.uid() = user_id);
+2. **Configuration**: `src/core/config.py`
+   - Reads all Supabase and JWT settings from environment variables
+   - Validates required configuration values
 
-CREATE POLICY "Users can update own notifications" ON notifications
-    FOR UPDATE USING (auth.uid() = user_id);
+3. **Authentication**: `src/utils/auth.py`
+   - JWT token creation and verification
+   - Password hashing and verification
+   - Token pair generation for access/refresh tokens
+
+### Usage Examples
+
+```python
+# Get database client
+from src.core.database import get_database
+
+# In a FastAPI route
+@app.get("/users")
+async def get_users(db = Depends(get_database)):
+    result = db.table("users").select("*").execute()
+    return result.data
 ```
 
-## Environment Variables Required
+## Security Configuration
 
-The following environment variables must be set in the application:
+### Authentication Flow
+1. User registers/logs in through `/auth/login` endpoint
+2. API generates JWT tokens using configured secret key
+3. Subsequent requests include JWT token in Authorization header
+4. API validates token and extracts user information
+5. Database operations use service role key with application-level authorization
 
-- `SUPABASE_URL`: Your Supabase project URL
-- `SUPABASE_KEY`: Your Supabase service role key (for server-side operations)
-- `JWT_SECRET_KEY`: Secret key for JWT token signing
-- `JWT_ALGORITHM`: JWT algorithm (default: HS256)
-- `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`: Access token expiration time in minutes
-- `JWT_REFRESH_TOKEN_EXPIRE_DAYS`: Refresh token expiration time in days
-
-## Initial Data Setup
-
-### Create Admin User
-```sql
-INSERT INTO users (id, email, full_name, password_hash, role, is_active)
-VALUES (
-    gen_random_uuid(),
-    'admin@bugflow.com',
-    'System Administrator',
-    '$2b$12$example_hashed_password', -- Replace with actual hashed password
-    'admin',
-    true
-);
-```
-
-### Sample Project
-```sql
-INSERT INTO projects (id, name, description, owner_id)
-VALUES (
-    gen_random_uuid(),
-    'Sample Project',
-    'A sample project for testing the BugFlow application',
-    (SELECT id FROM users WHERE email = 'admin@bugflow.com' LIMIT 1)
-);
-```
-
-## API Integration Notes
-
-1. The FastAPI application uses the Supabase Python client for database operations
-2. Authentication is handled via JWT tokens generated by the API
-3. Row Level Security policies ensure data isolation between projects
-4. All database operations are performed using the service role key for maximum flexibility
-5. The API handles user permissions at the application level using the defined user roles
+### Environment Security
+- Service role key provides full database access for API operations
+- JWT secret key should be changed in production
+- All sensitive operations are logged in audit_logs table
 
 ## Backup and Maintenance
 
-1. Enable Supabase automated backups
-2. Monitor database performance using Supabase dashboard
-3. Regularly review audit logs for security analysis
-4. Consider archiving old audit logs and resolved bugs periodically
-5. Monitor storage usage and implement cleanup policies as needed
+1. **Automated Backups**: Enabled in Supabase dashboard
+2. **Monitoring**: Use Supabase dashboard for performance monitoring
+3. **Audit Trail**: All user actions are logged in audit_logs table
+4. **Cleanup**: Consider archiving old audit logs and resolved bugs periodically
+
+## Troubleshooting
+
+### Connection Issues
+1. Verify SUPABASE_URL and SUPABASE_KEY in `.env` file
+2. Check network connectivity to Supabase
+3. Ensure service role key has proper permissions
+
+### Database Issues
+1. Verify tables exist by checking Supabase dashboard
+2. Run setup_database.sql if tables are missing
+3. Check RLS policies if access is denied
+
+### API Issues
+1. Test database connection using health check endpoint: `GET /health/database`
+2. Check application logs for specific error messages
+3. Verify JWT configuration for authentication issues
+
+## Next Steps
+
+After setting up the database:
+
+1. ✅ Execute `setup_database.sql` in Supabase dashboard
+2. ✅ Test API connection with `GET /health/database`
+3. ✅ Create first admin user via `POST /auth/register`
+4. ✅ Test authentication flow with `POST /auth/login`
+5. ✅ Begin using API endpoints for project and bug management
+
+## API Endpoints
+
+The following endpoints are available once the database is set up:
+
+### Authentication
+- `POST /auth/register` - Register new user
+- `POST /auth/login` - User login
+- `POST /auth/refresh` - Refresh access token
+- `POST /auth/logout` - User logout
+- `PUT /auth/password` - Update password
+
+### Users
+- `GET /users` - List users (with pagination)
+- `GET /users/{user_id}` - Get user profile
+- `POST /users` - Create user (admin only)
+- `PUT /users/{user_id}` - Update user
+- `DELETE /users/{user_id}` - Delete user (admin only)
+
+### Projects
+- `GET /projects` - List projects
+- `GET /projects/{project_id}` - Get project details
+- `POST /projects` - Create project
+- `PUT /projects/{project_id}` - Update project
+- `DELETE /projects/{project_id}` - Delete project
+- `GET /projects/{project_id}/members` - Get project members
+- `POST /projects/{project_id}/members/{user_id}` - Add member
+- `DELETE /projects/{project_id}/members/{user_id}` - Remove member
+
+### Bugs
+- `GET /bugs` - List bugs (with filtering)
+- `GET /bugs/{bug_id}` - Get bug details
+- `POST /bugs` - Create bug
+- `PUT /bugs/{bug_id}` - Update bug
+- `DELETE /bugs/{bug_id}` - Delete bug
+- `GET /bugs/{bug_id}/comments` - Get bug comments
+- `POST /bugs/{bug_id}/comments` - Add comment
+
+### Dashboard
+- `GET /dashboard/stats` - Get dashboard statistics
+- `GET /dashboard/activity` - Get recent activity
+
+### Notifications
+- `GET /notifications` - List user notifications
+- `GET /notifications/unread/count` - Get unread count
+- `PUT /notifications/{notification_id}` - Mark as read/unread
+- `DELETE /notifications/{notification_id}` - Delete notification
+
+## Production Checklist
+
+Before deploying to production:
+
+- [ ] Change JWT_SECRET_KEY to a secure random value
+- [ ] Update admin user password in database
+- [ ] Configure proper CORS origins
+- [ ] Enable Supabase backups
+- [ ] Set up monitoring and alerting
+- [ ] Review and adjust RLS policies as needed
+- [ ] Configure rate limiting
+- [ ] Set up SSL/TLS certificates

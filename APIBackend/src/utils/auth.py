@@ -2,7 +2,12 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from ..core.config import settings
+
+try:
+    from ..core.config import settings
+except ImportError:
+    # Fallback for direct module execution
+    from core.config import settings
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

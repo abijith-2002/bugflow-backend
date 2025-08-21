@@ -1,6 +1,6 @@
-from typing import List
+from typing import List, Union
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, env="PORT")
     
     # CORS
-    cors_origins: List[str] = Field(
-        default=["http://localhost:3000", "https://localhost:3000"],
+    cors_origins: Union[str, List[str]] = Field(
+        default="http://localhost:3000,https://localhost:3000",
         env="CORS_ORIGINS"
     )
     
@@ -31,15 +31,21 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = Field(default=30, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
     jwt_refresh_token_expire_days: int = Field(default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS")
     
+    @field_validator('cors_origins')
+    @classmethod
+    def parse_cors_origins(cls, v):
+        """Parse CORS origins from string or list."""
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",")]
+        return v
+    
     class Config:
         env_file = ".env"
         case_sensitive = False
 
     @property
     def cors_origins_list(self) -> List[str]:
-        """Convert CORS origins string to list if needed."""
-        if isinstance(self.cors_origins, str):
-            return [origin.strip() for origin in self.cors_origins.split(",")]
+        """Get CORS origins as list."""
         return self.cors_origins
 
 
