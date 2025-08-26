@@ -27,9 +27,11 @@ Required by /projects GET and POST endpoints (see APIBackend/PROJECTS_USAGE.md):
 
 Table: public.projects
 - id uuid primary key default gen_random_uuid()
-- name text not null
+- name varchar(120) not null
+- project_key varchar(20) not null unique
 - description text null
 - created_at timestamptz not null default now()
+- colour varchar(30) null
 
 RLS (development-permissive; tighten for production):
 - SELECT policy: using (true)

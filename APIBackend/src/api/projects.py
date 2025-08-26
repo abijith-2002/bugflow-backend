@@ -3,7 +3,7 @@ from typing import List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .config import get_settings
 
@@ -44,7 +44,7 @@ class SupabaseDBClient:
         """
         url = f"{self.base_url}/projects"
         params = {
-            "select": "id,name,description,created_at",
+            "select": "id,name,project_key,description,colour,created_at",
             "order": "created_at.desc",
         }
         async with httpx.AsyncClient() as client:
@@ -58,12 +58,30 @@ class SupabaseDBClient:
             # On success, Supabase returns a JSON array
             return resp.json()
 
-    async def insert_project(self, *, name: str, description: Optional[str]) -> dict:
+    async def insert_project(
+        self,
+        *,
+        name: str,
+        project_key: str,
+        description: Optional[str],
+        colour: Optional[str],
+        created_at: Optional[str],
+    ) -> dict:
         """
         Insert a new project row and return the created record.
         """
         url = f"{self.base_url}/projects"
-        payload = [{"name": name, "description": description}]
+        body: dict = {
+            "name": name,
+            "project_key": project_key,
+            "description": description,
+            "colour": colour,
+        }
+        # Allow client-provided created_at if present (ISO 8601 string). Otherwise DB default will populate.
+        if created_at:
+            body["created_at"] = created_at
+
+        payload = [body]
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=self.headers, json=payload, timeout=20.0)
             if resp.status_code >= 400:
@@ -79,7 +97,7 @@ class SupabaseDBClient:
             if isinstance(data, dict):
                 return data
             # Fallback if nothing returned
-            return {"name": name, "description": description}
+            return body
 
 
 def get_db_client(settings: SettingsAdapter = Depends(get_settings)) -> SupabaseDBClient:
@@ -101,14 +119,31 @@ class Project(BaseModel):
     """Project entity returned by the API."""
     id: str = Field(..., description="Project unique identifier (UUID)")
     name: str = Field(..., description="Project name")
+    project_key: str = Field(..., description="Short unique project key, e.g., BUG or APP")
     description: Optional[str] = Field(default=None, description="Project description")
+    colour: Optional[str] = Field(default=None, description="Project colour (CSS color or hex code)")
     created_at: datetime = Field(..., description="Creation timestamp")
 
 
 class CreateProjectRequest(BaseModel):
     """Payload to create a new project."""
-    name: str = Field(..., min_length=1, max_length=200, description="Project name")
+    name: str = Field(..., min_length=1, max_length=120, description="Project name")
+    project_key: str = Field(..., min_length=1, max_length=20, description="Unique project key (short code)")
     description: Optional[str] = Field(default=None, description="Project description")
+    colour: Optional[str] = Field(default=None, max_length=30, description="Project colour (CSS/hex)")
+    created_at: Optional[datetime] = Field(
+        default=None,
+        description="Creation timestamp; if omitted, database default now() will be used",
+    )
+
+    @field_validator("project_key")
+    @classmethod
+    def project_key_format(cls, v: str) -> str:
+        # Basic format: letters, numbers, dashes and underscores only; uppercase recommended but not enforced
+        allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        if not v or any(ch not in allowed for ch in v):
+            raise ValueError("project_key may contain only letters, numbers, '-' and '_'")
+        return v
 
 
 # PUBLIC_INTERFACE
@@ -164,7 +199,7 @@ async def list_projects(db: SupabaseDBClient = Depends(get_db_client)) -> List[P
     response_model=Project,
     status_code=status.HTTP_201_CREATED,
     summary="Create a project",
-    description="Create a new project in Supabase with the provided name and description.",
+    description="Create a new project in Supabase with the provided name, project_key, description, colour, and created_at.",
     responses={
         201: {"description": "Project created"},
         400: {"description": "Validation or Supabase error"},
@@ -179,14 +214,28 @@ async def create_project(
     Create a new project.
 
     Parameters:
-    - name: Project name
+    - name: Project name (required)
+    - project_key: Short unique project key (required)
     - description: Optional description
+    - colour: Optional colour (CSS/hex)
+    - created_at: Optional creation timestamp; if omitted DB default is used
 
     Returns:
     - The created Project object including id and created_at.
+
+    Error handling:
+    - 400 for validation or upstream Supabase errors
+    - 502 for network errors
+    - 500 for unexpected server errors
     """
     try:
-        created = await db.insert_project(name=payload.name, description=payload.description)
+        created = await db.insert_project(
+            name=payload.name,
+            project_key=payload.project_key,
+            description=payload.description,
+            colour=payload.colour,
+            created_at=payload.created_at.isoformat() if payload.created_at else None,
+        )
         # Ensure required fields exist; Supabase should return id and created_at
         return Project(**created)
     except HTTPException:
