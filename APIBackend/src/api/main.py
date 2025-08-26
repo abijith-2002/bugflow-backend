@@ -13,18 +13,40 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 import os
+import logging
+
+logger = logging.getLogger("bugflow.api")
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 # Ensure environment variables are available when app is imported, regardless of how it's started.
 # This allows `uvicorn src.api.main:app` to work the same as `python run.py`.
+dotenv_loaded = False
+dotenv_path_str = ""
 try:
     from pathlib import Path
     from dotenv import load_dotenv  # type: ignore
     # Load .env from the APIBackend directory if present
     env_path = (Path(__file__).parent.parent / ".env")
-    load_dotenv(dotenv_path=env_path)
+    dotenv_path_str = str(env_path)
+    dotenv_loaded = load_dotenv(dotenv_path=env_path)
+    logger.info("Env load attempt: path=%s loaded=%s exists=%s", dotenv_path_str, dotenv_loaded, env_path.exists())
+except Exception as e:
+    # dotenv is optional; log failure (e.g., not installed or file missing)
+    logger.warning("Env load failed via python-dotenv: %s", e)
+
+# Log current working directory and sys.path for diagnosing container run contexts
+try:
+    import sys
+    logger.info("Process CWD: %s", os.getcwd())
+    logger.info("sys.path contains APIBackend? %s", any("APIBackend" in p for p in sys.path))
 except Exception:
-    # dotenv is optional; ignore failures (e.g., not installed or file missing)
     pass
+
+# Snapshot critical env presence after attempted load
+logger.info(
+    "Startup env snapshot: SUPABASE_URL_present=%s SUPABASE_ANON_KEY_present=%s FRONTEND_ORIGIN=%s",
+    bool(os.getenv("SUPABASE_URL")), bool(os.getenv("SUPABASE_ANON_KEY")), os.getenv("FRONTEND_ORIGIN", "<unset>")
+)
 
 # Attempt to import auth router. If running from a different CWD where 'src' isn't on sys.path,
 # adjust sys.path to include the APIBackend root so 'src' package can be resolved.
@@ -39,6 +61,7 @@ except ModuleNotFoundError:
     api_backend_root = src_dir.parent  # .../APIBackend
     if str(api_backend_root) not in sys.path:
         sys.path.insert(0, str(api_backend_root))
+        logger.info("Adjusted sys.path to include APIBackend root: %s", api_backend_root)
     from src.api.auth import router as auth_router
 
 openapi_tags = [
@@ -83,7 +106,7 @@ health_router = APIRouter()
 )
 def health_check():
     """Return basic service health indicator."""
-    return {"message": "Healthy"}
+    return {"message": "Healthy", "env_loaded": dotenv_loaded, "supabase_url": bool(os.getenv("SUPABASE_URL")), "supabase_key": bool(os.getenv("SUPABASE_ANON_KEY"))}
 
 # Include routers
 app.include_router(health_router)

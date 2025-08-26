@@ -1,9 +1,12 @@
 from typing import Optional, Dict, Any
 
 import os
+import logging
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, EmailStr, Field
 from supabase import create_client, Client
+
+logger = logging.getLogger("bugflow.api.auth")
 
 # PUBLIC_INTERFACE
 def get_supabase_client() -> Client:
@@ -19,6 +22,12 @@ def get_supabase_client() -> Client:
     Raises:
         HTTPException: If required environment variables are missing.
     """
+    # Log a snapshot just before dependency creation
+    logger.info(
+        "get_supabase_client: SUPABASE_URL_present=%s SUPABASE_ANON_KEY_present=%s",
+        bool(os.getenv("SUPABASE_URL")), bool(os.getenv("SUPABASE_ANON_KEY"))
+    )
+
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
 
@@ -84,6 +93,10 @@ def signup(payload: SignupRequest, supabase: Client = Depends(get_supabase_clien
         - If email confirmation is enabled, access token may be None until confirmed.
     """
     try:
+        logger.info(
+            "Handling /signup: SITE_URL_present=%s",
+            bool(os.getenv("SITE_URL"))
+        )
         # Prepare options: set email redirect URL if SITE_URL is present
         site_url = os.getenv("SITE_URL")
         signup_options: Dict[str, Any] = {}
@@ -108,6 +121,7 @@ def signup(payload: SignupRequest, supabase: Client = Depends(get_supabase_clien
                 ).execute()
             except Exception:
                 # Silently ignore if table not available
+                logger.info("profiles upsert skipped or failed (table may not exist).")
                 pass
 
         return AuthResponse(
@@ -148,6 +162,7 @@ def login(payload: LoginRequest, supabase: Client = Depends(get_supabase_client)
         AuthResponse: Contains user_id, access_token, refresh_token, and a message.
     """
     try:
+        logger.info("Handling /login request.")
         result = supabase.auth.sign_in_with_password({"email": payload.email, "password": payload.password})
         session = result.session
         user = result.user
