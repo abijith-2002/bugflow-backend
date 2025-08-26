@@ -125,7 +125,7 @@ class AuthService:
                 "user": user_profile
             }
             
-        except APIError as e:
+        except APIError:
             raise ValueError("Invalid credentials")
         except Exception as e:
             raise ValueError(f"Login failed: {str(e)}")
