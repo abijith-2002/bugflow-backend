@@ -4,7 +4,6 @@ This backend integrates with Supabase Auth using direct HTTP calls (no heavy SDK
 
 - SUPABASE_URL: e.g., https://your-project-id.supabase.co
 - SUPABASE_ANON_KEY: Project anon public key
-- SITE_URL: Public frontend URL for email confirmation redirect (must be allow‑listed in Supabase > Authentication > URL Configuration)
 
 Auth endpoints used by the backend:
 - POST {SUPABASE_URL}/auth/v1/signup
@@ -15,7 +14,7 @@ HTTP headers sent:
 - Authorization: Bearer SUPABASE_ANON_KEY
 - Content-Type: application/json
 
-Signup no longer forwards a request-provided redirect URL. Configure redirect behavior in Supabase (Site URL and Redirect URLs). The application may still rely on SITE_URL for general usage elsewhere.
+Signup does not accept a request-provided redirect URL. Configure all redirect behavior in Supabase (Site URL and Redirect URLs in the Supabase Dashboard). The backend does not need a SITE_URL variable.
 
 ## Current setup status
 
@@ -55,12 +54,10 @@ When the Supabase tools adapter is available, we will:
 Backend (.env for APIBackend):
 - SUPABASE_URL
 - SUPABASE_ANON_KEY
-- SITE_URL
 
 Frontend (React) will use:
 - REACT_APP_SUPABASE_URL
 - REACT_APP_SUPABASE_ANON_KEY
-- REACT_APP_SITE_URL (optional helper for redirects)
 
 Make sure the frontend uses a getURL() utility if it needs to construct URLs dynamically; the backend will not accept a redirect URL for signup.
 

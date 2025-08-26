@@ -60,7 +60,6 @@ def get_auth_client(settings=Depends(get_settings)) -> SupabaseAuthClient:
         return SupabaseAuthClient(
             supabase_url=settings.SUPABASE_URL,
             supabase_key=settings.SUPABASE_ANON_KEY,
-            site_url=settings.SITE_URL,
         )
     except ValueError as e:
         # Configuration problem; surface as 500 with actionable detail

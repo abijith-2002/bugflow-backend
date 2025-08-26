@@ -11,12 +11,11 @@ class SupabaseAuthClient:
       - POST {SUPABASE_URL}/auth/v1/token?grant_type=password
     """
 
-    def __init__(self, supabase_url: str, supabase_key: str, site_url: str):
+    def __init__(self, supabase_url: str, supabase_key: str):
         if not supabase_url or not supabase_key:
             raise ValueError("Supabase URL and Key must be provided via environment variables.")
         self.supabase_url = supabase_url.rstrip("/")
         self.supabase_key = supabase_key
-        self.site_url = site_url
 
         self._base_headers = {
             "apikey": self.supabase_key,

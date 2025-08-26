@@ -41,8 +41,7 @@ Response 200:
 Environment variables required (see .env.example):
 - SUPABASE_URL
 - SUPABASE_ANON_KEY
-- SITE_URL
 
 Troubleshooting:
-- 500 Configuration error: Ensure all three env vars above are set in APIBackend/.env.
+- 500 Configuration error: Ensure the two env vars above are set in APIBackend/.env.
 - 4xx errors on signup/login: These come from Supabase (e.g., password too weak, email taken, or auth URL config). The response body contains details.
