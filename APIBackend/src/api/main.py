@@ -14,7 +14,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 import os
 
-from src.api.auth import router as auth_router
+# Attempt to import auth router. If running from a different CWD where 'src' isn't on sys.path,
+# adjust sys.path to include the APIBackend root so 'src' package can be resolved.
+try:
+    from src.api.auth import router as auth_router
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    current_file = Path(__file__).resolve()
+    api_dir = current_file.parent
+    src_dir = api_dir.parent  # .../APIBackend/src
+    api_backend_root = src_dir.parent  # .../APIBackend
+    if str(api_backend_root) not in sys.path:
+        sys.path.insert(0, str(api_backend_root))
+    from src.api.auth import router as auth_router
 
 openapi_tags = [
     {"name": "Health", "description": "Service health and utility endpoints"},
