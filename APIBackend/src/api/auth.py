@@ -97,24 +97,29 @@ def signup(payload: SignupRequest, supabase: Client = Depends(get_supabase_clien
             "Handling /signup: SITE_URL_present=%s",
             bool(os.getenv("SITE_URL"))
         )
-        # Prepare options: set email redirect URL if SITE_URL is present
+        # Prepare options: always pass a dict to avoid client None dereference in some versions
         site_url = os.getenv("SITE_URL")
         signup_options: Dict[str, Any] = {}
         if site_url:
             signup_options["email_redirect_to"] = f"{site_url}/auth/callback"
 
+        # Assemble payload ensuring 'options' is always a dict (never None)
+        signup_payload: Dict[str, Any] = {
+            "email": payload.email,
+            "password": payload.password,
+            "options": signup_options,  # keep empty dict if no SITE_URL
+        }
+
         # Sign up user
-        result = supabase.auth.sign_up(
-            {"email": payload.email, "password": payload.password, "options": signup_options or None}
-        )
+        result = supabase.auth.sign_up(signup_payload)
 
         # result contains user and potentially session (if auto-confirm disabled)
-        user = result.user
-        session = result.session
+        user = getattr(result, "user", None)
+        session = getattr(result, "session", None)
 
         # Optionally upsert profile in a "profiles" table if exists
         # This is best-effort and will be ignored if table does not exist
-        if payload.full_name:
+        if payload.full_name and user and getattr(user, "id", None):
             try:
                 supabase.table("profiles").upsert(
                     {"id": user.id, "email": payload.email, "full_name": payload.full_name}
@@ -132,6 +137,12 @@ def signup(payload: SignupRequest, supabase: Client = Depends(get_supabase_clien
         )
     except Exception as e:
         msg = str(e)
+        # Specific guard for common client error when nested dicts are None
+        if "'NoneType' object has no attribute 'get'" in msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Signup failed due to malformed request options. Please try again or contact support."
+            )
         if "User already registered" in msg or "already registered" in msg:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Signup failed: {msg}")
