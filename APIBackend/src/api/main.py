@@ -1,3 +1,14 @@
+"""
+FastAPI application for the BugFlow backend.
+
+Exposes:
+- Health endpoint at GET /
+- Authentication endpoints at POST /signup and POST /login (Supabase-backed)
+
+OpenAPI is configured with descriptive tags. CORS is enabled using FRONTEND_ORIGIN
+environment variable (default "*").
+"""
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
@@ -10,6 +21,12 @@ openapi_tags = [
     {"name": "Authentication", "description": "User authentication via Supabase (signup and login)"},
 ]
 
+# PUBLIC_INTERFACE
+def get_openapi_tags():
+    """Return the OpenAPI tag definitions used by the application."""
+    return openapi_tags
+
+# PUBLIC_INTERFACE
 app = FastAPI(
     title="BugFlow API",
     description="Backend API for the BugFlow bug tracking application. Handles auth and business logic.",
