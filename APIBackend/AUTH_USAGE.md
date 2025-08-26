@@ -9,8 +9,7 @@ Content-Type: application/json
 Body:
 {
   "email": "user@example.com",
-  "password": "password123",
-  "redirect_to": "https://your-frontend-domain.com" // optional; defaults to SITE_URL
+  "password": "password123"
 }
 
 Response 201:

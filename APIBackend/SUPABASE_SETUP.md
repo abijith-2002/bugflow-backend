@@ -23,3 +23,4 @@ Follow these steps to run the backend with Supabase Auth:
 5) Notes
    - Backend uses httpx to call Supabase Auth, no client SDK needed.
    - Do not use REACT_APP_* vars in the backend.
+   - The backend no longer accepts a redirect_to field on signup; configure redirect behavior in Supabase (Site URL and Redirect URLs). SITE_URL remains required for general configuration.

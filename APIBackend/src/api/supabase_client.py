@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import httpx
 
@@ -24,15 +24,13 @@ class SupabaseAuthClient:
             "Content-Type": "application/json",
         }
 
-    async def sign_up(self, *, email: str, password: str, redirect_to: Optional[str]) -> Dict[str, Any]:
+    async def sign_up(self, *, email: str, password: str) -> Dict[str, Any]:
         """
         Calls Supabase signup endpoint.
         Docs: https://supabase.com/docs/reference/auth/signup
         """
         url = f"{self.supabase_url}/auth/v1/signup"
         payload: Dict[str, Any] = {"email": email, "password": password}
-        if redirect_to:
-            payload["data"] = {"emailRedirectTo": redirect_to}
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=self._base_headers, json=payload, timeout=20.0)
             # Supabase returns 200/201; on error returns 400/422 with JSON body

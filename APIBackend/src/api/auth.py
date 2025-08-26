@@ -13,10 +13,6 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 class SignUpRequest(BaseModel):
     email: EmailStr = Field(..., description="Email address of the new user")
     password: str = Field(..., min_length=8, description="Password (min 8 characters)")
-    redirect_to: Optional[str] = Field(
-        default=None,
-        description="Optional redirect URL after email confirmation. If omitted, will use SITE_URL from environment.",
-    )
 
     @field_validator("password")
     @classmethod
@@ -83,7 +79,6 @@ async def signup(payload: SignUpRequest, auth_client: SupabaseAuthClient = Depen
     Parameters:
     - email: Email address of the new user
     - password: Password for the new user (min 8 characters)
-    - redirect_to: Optional redirect URL to include in Supabase email verification link. Falls back to SITE_URL.
 
     Returns:
     - message: Status message
@@ -91,8 +86,7 @@ async def signup(payload: SignUpRequest, auth_client: SupabaseAuthClient = Depen
     - needs_verification: Indicates if email verification is required (true in most Supabase setups)
     """
     try:
-        redirect = payload.redirect_to or auth_client.site_url
-        res = await auth_client.sign_up(email=str(payload.email), password=payload.password, redirect_to=redirect)
+        res = await auth_client.sign_up(email=str(payload.email), password=payload.password)
         # Supabase returns {user, session}. If email confirmation is required, session will be None and user exists.
         user_id = None
         needs_verification = True
