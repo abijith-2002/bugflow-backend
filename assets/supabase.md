@@ -69,6 +69,11 @@ Make sure the frontend uses a getURL() utility if it needs to construct URLs dyn
   - POST /auth/login
 - Inspect responses and verify signup emails from Supabase use the Site URL configured in the Supabase dashboard.
 
+Troubleshooting login and email confirmation:
+- If Supabase project has email confirmation disabled, login with correct credentials should return 200 and include session/access_token.
+- If you still receive a 4xx error mentioning "email not confirmed", that message originates from Supabase (check Authentication settings in the dashboard). The backend does not enforce confirmation checks; it forwards Supabase's error payload.
+- If you receive a 200 without a session (unexpected), the backend will return 502 "Supabase did not return a session"; verify your Supabase project configuration and keys.
+
 ## Notes
 
 - Never hardcode URLs in auth flows; use environment variables and Supabase URL configuration.

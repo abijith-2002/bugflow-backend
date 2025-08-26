@@ -107,8 +107,18 @@ async def signup(payload: SignUpRequest, auth_client: SupabaseAuthClient = Depen
     except HTTPException:
         raise
     except httpx.HTTPStatusError as e:
+        # Propagate Supabase status and message. Avoid implying email confirmation issues
+        # unless Supabase explicitly returns that message.
         status_code = e.response.status_code if e.response is not None else 400
-        detail = e.response.text if e.response is not None else str(e)
+        try:
+            detail_json = e.response.json() if e.response is not None else None
+        except Exception:
+            detail_json = None
+        # Prefer structured error fields if available
+        if isinstance(detail_json, dict):
+            detail = detail_json.get("error_description") or detail_json.get("error") or detail_json.get("msg") or detail_json.get("message") or e.response.text
+        else:
+            detail = e.response.text if e.response is not None else str(e)
         raise HTTPException(status_code=status_code, detail=detail)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Supabase network error: {str(e)}")
@@ -146,14 +156,27 @@ async def login(payload: LoginRequest, auth_client: SupabaseAuthClient = Depends
     - user_id: Supabase user id
     """
     try:
+        # Sign in with Supabase using password grant.
+        # Supabase will return 200 with a session when credentials are valid and project
+        # configuration allows immediate session creation (e.g., email confirmation disabled).
+        # If email confirmation is required and not completed, Supabase typically returns 400 with a
+        # descriptive error. We must not invent an "email not confirmed" error solely based on
+        # a missing session; rely on Supabase's status codes and body instead.
         res = await auth_client.sign_in(email=str(payload.email), password=payload.password)
-        if not res:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+        if not isinstance(res, dict):
+            raise HTTPException(status_code=502, detail="Unexpected response from Supabase")
 
         session = res.get("session")
         user = res.get("user")
+
+        # When Supabase returns 200, a valid session should be present.
+        # If for any reason the session is missing despite a 200, treat as upstream error.
         if not session:
-            raise HTTPException(status_code=401, detail="Invalid credentials or email not confirmed")
+            # Provide the upstream error message if present in payload
+            supabase_error = res.get("error") or res.get("msg") or res.get("message")
+            if supabase_error:
+                raise HTTPException(status_code=401, detail=str(supabase_error))
+            raise HTTPException(status_code=502, detail="Supabase did not return a session")
 
         access_token = session.get("access_token")
         refresh_token = session.get("refresh_token")

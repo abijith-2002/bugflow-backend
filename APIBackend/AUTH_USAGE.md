@@ -44,4 +44,4 @@ Environment variables required (see .env.example):
 
 Troubleshooting:
 - 500 Configuration error: Ensure the two env vars above are set in APIBackend/.env.
-- 4xx errors on signup/login: These come from Supabase (e.g., password too weak, email taken, or auth URL config). The response body contains details.
+- 4xx errors on signup/login: These come from Supabase (e.g., password too weak, email taken, email not confirmed when required by project settings, or auth URL config). The backend does not hardcode email confirmation checks; it surfaces Supabase errors verbatim where possible. Review the response body for exact cause.

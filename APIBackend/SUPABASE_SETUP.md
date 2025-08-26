@@ -24,6 +24,7 @@ Follow these steps to run the backend with Supabase Auth:
    - Backend uses httpx to call Supabase Auth, no client SDK needed.
    - Do not use REACT_APP_* vars in the backend.
    - The backend does not accept a redirect_to field on signup; configure redirect behavior entirely in Supabase (Site URL and Redirect URLs). No SITE_URL is required by the backend.
+   - Email confirmation requirement is fully controlled by Supabase project settings. The backend no longer rejects login attempts based solely on a missing session; it forwards Supabase's errors as-is.
 
 Troubleshooting
 - If POST /auth/signup returns a 500 with "Configuration error: Missing required environment variables...", ensure APIBackend/.env is present and contains values for:
