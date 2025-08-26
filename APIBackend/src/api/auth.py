@@ -157,73 +157,105 @@ async def login(payload: LoginRequest, auth_client: SupabaseAuthClient = Depends
     """
     try:
         # Sign in with Supabase using password grant.
-        # Supabase will return 200 with a session when credentials are valid and project
-        # configuration allows immediate session creation (e.g., email confirmation disabled).
-        # If email confirmation is required and not completed, Supabase typically returns 400 with a
-        # descriptive error. We must not invent an "email not confirmed" error solely based on
-        # a missing session; rely on Supabase's status codes and body instead.
+        # Supabase's newer responses may return top-level access_token and user without a nested "session".
         res = await auth_client.sign_in(email=str(payload.email), password=payload.password)
         if not isinstance(res, dict):
             raise HTTPException(status_code=502, detail="Unexpected response from Supabase")
 
+        # Preferred/legacy structure:
+        # { session: { access_token, refresh_token, expires_in, ... }, user: {...} }
         session = res.get("session")
         user = res.get("user")
 
-        # When Supabase returns 200, a valid session should be present.
-        # If for any reason the session is missing despite a 200, enhance diagnostics.
-        if not session:
-            # Collect common error fields if present
-            # Include: error_description, error, msg, message
-            error_fields = {}
-            for k in ("error_description", "error", "msg", "message"):
-                if k in res and res.get(k):
-                    error_fields[k] = res.get(k)
+        # Newer structure observed from Supabase:
+        # { access_token, refresh_token?, expires_in?, expires_at?, token_type?, user? }
+        top_level_access = res.get("access_token")
+        top_level_token_type = res.get("token_type")
+        top_level_expires_in = res.get("expires_in")
+        top_level_expires_at = res.get("expires_at")
+        top_level_refresh = res.get("refresh_token")
 
-            if error_fields:
-                # Propagate as Unauthorized with upstream details for clearer troubleshooting
-                # Prefer a concise message while preserving structure in detail
-                # Use the first available field as the primary detail string
-                primary = (
-                    error_fields.get("error_description")
-                    or error_fields.get("error")
-                    or error_fields.get("msg")
-                    or error_fields.get("message")
-                )
-                raise HTTPException(
-                    status_code=401,
-                    detail=primary if isinstance(primary, str) else str(primary),
-                )
+        # If legacy session exists, use it.
+        if session:
+            access_token = session.get("access_token")
+            refresh_token = session.get("refresh_token")
+            expires_in = session.get("expires_in")
+            user_id = user.get("id") if user else None
 
-            # If none of the typical fields exist, return a 502 with a hint about present keys
-            # Exclude obviously sensitive values (we only list keys, not values)
-            sensitive_keys = {"access_token", "refresh_token", "provider_token", "provider_refresh_token"}
-            present_keys = [k for k in res.keys() if k not in sensitive_keys]
-            hint = f"payload keys present: {', '.join(sorted(present_keys))}" if present_keys else "payload was empty"
-            raise HTTPException(
-                status_code=502,
-                detail=f"Supabase did not return a session; {hint}",
+            if not access_token:
+                raise HTTPException(status_code=502, detail="Supabase did not return an access token in session")
+
+            return LoginResponse(
+                access_token=access_token,
+                token_type="bearer",
+                expires_in=expires_in,
+                refresh_token=refresh_token,
+                user_id=user_id,
             )
 
-        access_token = session.get("access_token")
-        refresh_token = session.get("refresh_token")
-        expires_in = session.get("expires_in")
-        user_id = user.get("id") if user else None
+        # If newer response provides access token (or strong indicators), treat as success.
+        if top_level_access or (top_level_expires_at and user and top_level_token_type):
+            access_token = top_level_access
+            refresh_token = top_level_refresh
+            expires_in = top_level_expires_in
+            user_id = (user or {}).get("id") if isinstance(user, dict) else None
 
-        if not access_token:
-            raise HTTPException(status_code=502, detail="Supabase did not return an access token")
+            if not access_token:
+                # Some variants might include token_type/expires_at but omit access_token;
+                # treat as an upstream anomaly.
+                sensitive_keys = {"access_token", "refresh_token", "provider_token", "provider_refresh_token"}
+                present_keys = [k for k in res.keys() if k not in sensitive_keys]
+                hint = f"payload keys present: {', '.join(sorted(present_keys))}" if present_keys else "payload was empty"
+                raise HTTPException(status_code=502, detail=f"Supabase response missing access_token; {hint}")
 
-        return LoginResponse(
-            access_token=access_token,
-            token_type="bearer",
-            expires_in=expires_in,
-            refresh_token=refresh_token,
-            user_id=user_id,
-        )
+            return LoginResponse(
+                access_token=access_token,
+                token_type=top_level_token_type or "bearer",
+                expires_in=expires_in,
+                refresh_token=refresh_token,
+                user_id=user_id,
+            )
+
+        # Otherwise, attempt to surface explicit error fields if provided.
+        error_fields = {}
+        for k in ("error_description", "error", "msg", "message"):
+            if k in res and res.get(k):
+                error_fields[k] = res.get(k)
+
+        if error_fields:
+            primary = (
+                error_fields.get("error_description")
+                or error_fields.get("error")
+                or error_fields.get("msg")
+                or error_fields.get("message")
+            )
+            raise HTTPException(status_code=401, detail=primary if isinstance(primary, str) else str(primary))
+
+        # Fallback diagnostic for unexpected payload without tokens or error fields.
+        sensitive_keys = {"access_token", "refresh_token", "provider_token", "provider_refresh_token"}
+        present_keys = [k for k in res.keys() if k not in sensitive_keys]
+        hint = f"payload keys present: {', '.join(sorted(present_keys))}" if present_keys else "payload was empty"
+        raise HTTPException(status_code=502, detail=f"Supabase did not return a session; {hint}")
+
     except HTTPException:
         raise
     except httpx.HTTPStatusError as e:
         status_code = e.response.status_code if e.response is not None else 400
-        detail = e.response.text if e.response is not None else str(e)
+        # Attempt to parse JSON to bubble better error messages
+        try:
+            detail_json = e.response.json() if e.response is not None else None
+        except Exception:
+            detail_json = None
+        if isinstance(detail_json, dict):
+            detail = (
+                detail_json.get("error_description")
+                or detail_json.get("error")
+                or detail_json.get("msg")
+                or detail_json.get("message")
+                or e.response.text
+            )
+        else:
+            detail = e.response.text if e.response is not None else str(e)
         raise HTTPException(status_code=status_code, detail=detail)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Supabase network error: {str(e)}")
