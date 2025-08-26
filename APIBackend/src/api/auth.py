@@ -13,6 +13,12 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 class SignUpRequest(BaseModel):
     email: EmailStr = Field(..., description="Email address of the new user")
     password: str = Field(..., min_length=8, description="Password (min 8 characters)")
+    username: str = Field(
+        ...,
+        min_length=2,
+        max_length=60,
+        description="Display name to be stored in the Supabase user profile (user_metadata).",
+    )
 
     @field_validator("password")
     @classmethod
@@ -86,6 +92,7 @@ async def signup(payload: SignUpRequest, auth_client: SupabaseAuthClient = Depen
     Parameters:
     - email: Email address of the new user
     - password: Password for the new user (min 8 characters)
+    - username: Display name to store in Supabase user metadata (display_name)
 
     Returns:
     - message: Status message
@@ -93,7 +100,11 @@ async def signup(payload: SignUpRequest, auth_client: SupabaseAuthClient = Depen
     - needs_verification: Indicates if email verification is required (true in most Supabase setups)
     """
     try:
-        res = await auth_client.sign_up(email=str(payload.email), password=payload.password)
+        res = await auth_client.sign_up(
+            email=str(payload.email),
+            password=payload.password,
+            user_metadata={"display_name": payload.username},
+        )
         # Supabase returns {user, session}. If email confirmation is required, session will be None and user exists.
         user_id = None
         needs_verification = True
@@ -103,7 +114,11 @@ async def signup(payload: SignUpRequest, auth_client: SupabaseAuthClient = Depen
                 user_id = user.get("id")
             session = res.get("session")
             needs_verification = session is None
-        return SignUpResponse(message="User registration initiated", user_id=user_id, needs_verification=needs_verification)
+        return SignUpResponse(
+            message="User registration initiated",
+            user_id=user_id,
+            needs_verification=needs_verification,
+        )
     except HTTPException:
         raise
     except httpx.HTTPStatusError as e:

@@ -23,13 +23,21 @@ class SupabaseAuthClient:
             "Content-Type": "application/json",
         }
 
-    async def sign_up(self, *, email: str, password: str) -> Dict[str, Any]:
+    async def sign_up(self, *, email: str, password: str, user_metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """
         Calls Supabase signup endpoint.
         Docs: https://supabase.com/docs/reference/auth/signup
+
+        Parameters:
+        - email: Email address
+        - password: Password
+        - user_metadata: Optional metadata to attach to the user (e.g., {"display_name": "Alice"})
         """
         url = f"{self.supabase_url}/auth/v1/signup"
         payload: Dict[str, Any] = {"email": email, "password": password}
+        if user_metadata:
+            # Supabase accepts user_metadata in the signup payload; it is stored on the auth user record
+            payload["data"] = user_metadata  # alias "data" per Supabase API (maps to user_metadata)
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=self._base_headers, json=payload, timeout=20.0)
             # Supabase returns 200/201; on error returns 400/422 with JSON body

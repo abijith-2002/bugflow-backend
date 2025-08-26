@@ -9,7 +9,8 @@ Content-Type: application/json
 Body:
 {
   "email": "user@example.com",
-  "password": "password123"
+  "password": "password123",
+  "username": "Alice"
 }
 
 Response 201:
