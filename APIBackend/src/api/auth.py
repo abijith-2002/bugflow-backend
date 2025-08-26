@@ -170,13 +170,39 @@ async def login(payload: LoginRequest, auth_client: SupabaseAuthClient = Depends
         user = res.get("user")
 
         # When Supabase returns 200, a valid session should be present.
-        # If for any reason the session is missing despite a 200, treat as upstream error.
+        # If for any reason the session is missing despite a 200, enhance diagnostics.
         if not session:
-            # Provide the upstream error message if present in payload
-            supabase_error = res.get("error") or res.get("msg") or res.get("message")
-            if supabase_error:
-                raise HTTPException(status_code=401, detail=str(supabase_error))
-            raise HTTPException(status_code=502, detail="Supabase did not return a session")
+            # Collect common error fields if present
+            # Include: error_description, error, msg, message
+            error_fields = {}
+            for k in ("error_description", "error", "msg", "message"):
+                if k in res and res.get(k):
+                    error_fields[k] = res.get(k)
+
+            if error_fields:
+                # Propagate as Unauthorized with upstream details for clearer troubleshooting
+                # Prefer a concise message while preserving structure in detail
+                # Use the first available field as the primary detail string
+                primary = (
+                    error_fields.get("error_description")
+                    or error_fields.get("error")
+                    or error_fields.get("msg")
+                    or error_fields.get("message")
+                )
+                raise HTTPException(
+                    status_code=401,
+                    detail=primary if isinstance(primary, str) else str(primary),
+                )
+
+            # If none of the typical fields exist, return a 502 with a hint about present keys
+            # Exclude obviously sensitive values (we only list keys, not values)
+            sensitive_keys = {"access_token", "refresh_token", "provider_token", "provider_refresh_token"}
+            present_keys = [k for k in res.keys() if k not in sensitive_keys]
+            hint = f"payload keys present: {', '.join(sorted(present_keys))}" if present_keys else "payload was empty"
+            raise HTTPException(
+                status_code=502,
+                detail=f"Supabase did not return a session; {hint}",
+            )
 
         access_token = session.get("access_token")
         refresh_token = session.get("refresh_token")
