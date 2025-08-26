@@ -25,6 +25,11 @@ app = FastAPI(
 )
 
 # CORS configuration - frontend origin should be set via env; default to allow all for dev
+# Required envs:
+# - SUPABASE_URL
+# - SUPABASE_ANON_KEY
+# - FRONTEND_ORIGIN (http://localhost:3000)
+# - SITE_URL (http://localhost:3000/)
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
 app.add_middleware(
     CORSMiddleware,
