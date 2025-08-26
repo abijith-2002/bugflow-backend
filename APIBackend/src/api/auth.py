@@ -52,11 +52,19 @@ class LoginResponse(BaseModel):
 
 
 def get_auth_client(settings=Depends(get_settings)) -> SupabaseAuthClient:
-    return SupabaseAuthClient(
-        supabase_url=settings.SUPABASE_URL,
-        supabase_key=settings.SUPABASE_ANON_KEY,
-        site_url=settings.SITE_URL,
-    )
+    """
+    Build a SupabaseAuthClient using validated settings.
+    Converts configuration errors into HTTPExceptions for clearer API responses.
+    """
+    try:
+        return SupabaseAuthClient(
+            supabase_url=settings.SUPABASE_URL,
+            supabase_key=settings.SUPABASE_ANON_KEY,
+            site_url=settings.SITE_URL,
+        )
+    except ValueError as e:
+        # Configuration problem; surface as 500 with actionable detail
+        raise HTTPException(status_code=500, detail=f"Configuration error: {str(e)}")
 
 
 # PUBLIC_INTERFACE
@@ -99,6 +107,10 @@ async def signup(payload: SignUpRequest, auth_client: SupabaseAuthClient = Depen
         return SignUpResponse(message="User registration initiated", user_id=user_id, needs_verification=needs_verification)
     except HTTPException:
         raise
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code if e.response is not None else 400
+        detail = e.response.text if e.response is not None else str(e)
+        raise HTTPException(status_code=status_code, detail=detail)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Supabase network error: {str(e)}")
     except Exception:
