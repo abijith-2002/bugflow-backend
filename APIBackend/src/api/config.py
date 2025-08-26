@@ -10,6 +10,10 @@ class Settings(BaseModel):
     Required environment variables:
     - SUPABASE_URL: The base URL of your Supabase project (e.g., https://xyzcompany.supabase.co)
     - SUPABASE_ANON_KEY: The anon public API key for Supabase
+
+    Notes:
+    - Environment variables are automatically loaded from APIBackend/.env at app startup (see src/api/main.py).
+    - You may override the .env path by setting ENV_PATH before starting the app.
     """
     SUPABASE_URL: str = Field(..., description="Supabase project URL")
     SUPABASE_ANON_KEY: str = Field(..., description="Supabase anon key")
