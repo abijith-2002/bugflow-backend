@@ -1,16 +1,10 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import sys
+import os
 
-app = FastAPI()
+# Add parent directory to path to import from app
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+from app.main import app
 
-@app.get("/")
-def health_check():
-    return {"message": "Healthy"}
+# Re-export the app instance for uvicorn
+__all__ = ["app"]
