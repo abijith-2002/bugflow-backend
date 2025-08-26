@@ -19,26 +19,44 @@ logger = logging.getLogger("bugflow.api")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 # Ensure environment variables are available when app is imported, regardless of how it's started.
-# This allows `uvicorn src.api.main:app` to work the same as `python run.py`.
+# Explicitly resolve APIBackend/.env using an absolute path so CWD/import context do not matter.
 dotenv_loaded = False
 dotenv_path_str = ""
 try:
+    import sys
     from pathlib import Path
     from dotenv import load_dotenv  # type: ignore
-    # Load .env from the APIBackend directory if present
-    env_path = (Path(__file__).parent.parent / ".env")
+
+    # Main file: .../APIBackend/src/api/main.py
+    current_file = Path(__file__).resolve()
+    api_dir = current_file.parent                  # .../APIBackend/src/api
+    src_dir = api_dir.parent                       # .../APIBackend/src
+    api_backend_root = src_dir.parent              # .../APIBackend
+
+    # Compute .env absolute path: .../APIBackend/.env
+    env_path = (api_backend_root / ".env").resolve()
     dotenv_path_str = str(env_path)
+
+    # Load the .env strictly from APIBackend root
     dotenv_loaded = load_dotenv(dotenv_path=env_path)
-    logger.info("Env load attempt: path=%s loaded=%s exists=%s", dotenv_path_str, dotenv_loaded, env_path.exists())
+    logger.info(
+        "Env load attempt: path=%s loaded=%s exists=%s",
+        dotenv_path_str, dotenv_loaded, env_path.exists()
+    )
+
+    # Also ensure APIBackend root on sys.path so 'src' imports resolve regardless of CWD
+    if str(api_backend_root) not in sys.path:
+        sys.path.insert(0, str(api_backend_root))
+        logger.info("Adjusted sys.path to include APIBackend root: %s", api_backend_root)
 except Exception as e:
     # dotenv is optional; log failure (e.g., not installed or file missing)
     logger.warning("Env load failed via python-dotenv: %s", e)
 
 # Log current working directory and sys.path for diagnosing container run contexts
 try:
-    import sys
+    import sys as _sys
     logger.info("Process CWD: %s", os.getcwd())
-    logger.info("sys.path contains APIBackend? %s", any("APIBackend" in p for p in sys.path))
+    logger.info("sys.path contains APIBackend? %s", any("APIBackend" in p for p in _sys.path))
 except Exception:
     pass
 
@@ -48,21 +66,8 @@ logger.info(
     bool(os.getenv("SUPABASE_URL")), bool(os.getenv("SUPABASE_ANON_KEY")), os.getenv("FRONTEND_ORIGIN", "<unset>")
 )
 
-# Attempt to import auth router. If running from a different CWD where 'src' isn't on sys.path,
-# adjust sys.path to include the APIBackend root so 'src' package can be resolved.
-try:
-    from src.api.auth import router as auth_router
-except ModuleNotFoundError:
-    import sys
-    from pathlib import Path
-    current_file = Path(__file__).resolve()
-    api_dir = current_file.parent
-    src_dir = api_dir.parent  # .../APIBackend/src
-    api_backend_root = src_dir.parent  # .../APIBackend
-    if str(api_backend_root) not in sys.path:
-        sys.path.insert(0, str(api_backend_root))
-        logger.info("Adjusted sys.path to include APIBackend root: %s", api_backend_root)
-    from src.api.auth import router as auth_router
+# Import routers (sys.path already adjusted above if necessary)
+from src.api.auth import router as auth_router  # noqa: E402
 
 openapi_tags = [
     {"name": "Health", "description": "Service health and utility endpoints"},
@@ -106,7 +111,13 @@ health_router = APIRouter()
 )
 def health_check():
     """Return basic service health indicator."""
-    return {"message": "Healthy", "env_loaded": dotenv_loaded, "supabase_url": bool(os.getenv("SUPABASE_URL")), "supabase_key": bool(os.getenv("SUPABASE_ANON_KEY"))}
+    return {
+        "message": "Healthy",
+        "env_loaded": dotenv_loaded,
+        "supabase_url": bool(os.getenv("SUPABASE_URL")),
+        "supabase_key": bool(os.getenv("SUPABASE_ANON_KEY")),
+        "dotenv_path": dotenv_path_str,
+    }
 
 # Include routers
 app.include_router(health_router)
