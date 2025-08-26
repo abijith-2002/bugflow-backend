@@ -17,6 +17,7 @@ FastAPI backend for the BugFlow application. Exposes REST APIs and integrates wi
 3) Start the server
 - Option A (recommended local): python run.py
 - Option B: uvicorn src.api.main:app --host 0.0.0.0 --port 3001 --reload
+  The app now auto-loads environment variables from APIBackend/.env on import, so uvicorn works the same as run.py.
   Ensure your working directory is this APIBackend folder so the 'src' package is importable.
 
 OpenAPI docs: /docs

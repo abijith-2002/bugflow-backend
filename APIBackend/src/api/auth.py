@@ -23,9 +23,15 @@ def get_supabase_client() -> Client:
     supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
 
     if not supabase_url or not supabase_anon_key:
+        # Provide a helpful error with guidance on where to configure env.
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Supabase configuration missing. Please set SUPABASE_URL and SUPABASE_ANON_KEY."
+            detail=(
+                "Supabase configuration missing. Please set SUPABASE_URL and SUPABASE_ANON_KEY. "
+                "The API loads environment variables from the process environment and, if present, "
+                "from a .env file located at APIBackend/.env. Ensure these variables are set before "
+                "calling /signup or /login."
+            ),
         )
     return create_client(supabase_url, supabase_anon_key)
 

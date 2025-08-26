@@ -14,6 +14,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 import os
 
+# Ensure environment variables are available when app is imported, regardless of how it's started.
+# This allows `uvicorn src.api.main:app` to work the same as `python run.py`.
+try:
+    from pathlib import Path
+    from dotenv import load_dotenv  # type: ignore
+    # Load .env from the APIBackend directory if present
+    env_path = (Path(__file__).parent.parent / ".env")
+    load_dotenv(dotenv_path=env_path)
+except Exception:
+    # dotenv is optional; ignore failures (e.g., not installed or file missing)
+    pass
+
 # Attempt to import auth router. If running from a different CWD where 'src' isn't on sys.path,
 # adjust sys.path to include the APIBackend root so 'src' package can be resolved.
 try:
