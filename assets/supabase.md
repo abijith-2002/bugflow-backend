@@ -30,19 +30,29 @@ Signup does not accept a request-provided redirect URL. Configure all redirect b
 2) Authentication > Email Templates
    - Optionally customize emails. Ensure links point to your configured Site URL.
 
-3) Policies and Tables (optional for future profile data)
-   - If you plan to store user profile metadata, create a `profiles` table with columns:
+3) Tables and Policies
+   - Projects table for dashboard:
+     - Create a `projects` table with columns:
+       - id uuid primary key default gen_random_uuid()
+       - name text not null
+       - description text
+       - created_at timestamptz not null default now()
+     - Enable RLS and add policies suited to your app. For development, you may allow:
+       - SELECT: using (true)
+       - INSERT: with check (true)
+     - In production, restrict based on auth.uid() or project membership.
+   - (Optional) Profiles table for user metadata:
      - id uuid default gen_random_uuid() primary key
      - user_id uuid not null unique references auth.users(id) on delete cascade
      - full_name text
      - avatar_url text
      - created_at timestamptz default now()
      - updated_at timestamptz default now()
-   - Example RLS policies (enable RLS and allow users to select/update only their own row):
-     - SELECT: using (auth.uid() = user_id)
-     - INSERT: with check (auth.uid() = user_id)
-     - UPDATE: using (auth.uid() = user_id)
-     - DELETE: using (auth.uid() = user_id)
+     - Example RLS policies:
+       - SELECT: using (auth.uid() = user_id)
+       - INSERT: with check (auth.uid() = user_id)
+       - UPDATE: using (auth.uid() = user_id)
+       - DELETE: using (auth.uid() = user_id)
 
 When the Supabase tools adapter is available, we will:
 - List existing tables.

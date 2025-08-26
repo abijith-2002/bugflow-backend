@@ -18,6 +18,7 @@ except Exception:
     pass
 
 from .auth import router as auth_router
+from .projects import router as projects_router
 
 app = FastAPI(
     title="BugFlow API",
@@ -46,3 +47,4 @@ def health_check():
 
 # Register routers
 app.include_router(auth_router)
+app.include_router(projects_router)
