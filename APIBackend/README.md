@@ -12,6 +12,11 @@ Required environment variables
 - SUPABASE_URL
 - SUPABASE_ANON_KEY
 
+Database/Auth SDK
+- This backend uses the official supabase-py client for:
+  - Authentication (signup/login)
+  - Database CRUD (projects, work_items)
+
 Notes
 - See SUPABASE_SETUP.md for dashboard configuration.
 - See AUTH_USAGE.md for endpoint usage and troubleshooting tips.

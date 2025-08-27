@@ -1,25 +1,26 @@
 # Supabase Integration for APIBackend
 
-This backend integrates with Supabase Auth using direct HTTP calls (no heavy SDK). It requires the following environment variables:
+This backend integrates with Supabase using the official supabase-py SDK for Auth and Database. It requires:
 
 - SUPABASE_URL: e.g., https://your-project-id.supabase.co
 - SUPABASE_ANON_KEY: Project anon public key
 
-Auth endpoints used by the backend:
-- POST {SUPABASE_URL}/auth/v1/signup
-- POST {SUPABASE_URL}/auth/v1/token?grant_type=password
-
-HTTP headers sent:
-- apikey: SUPABASE_ANON_KEY
-- Authorization: Bearer SUPABASE_ANON_KEY
-- Content-Type: application/json
+Key SDK usage:
+- Authentication:
+  - supabase.auth.sign_up(SignUpWithPasswordCredentials(...))
+  - supabase.auth.sign_in_with_password(SignInWithPasswordCredentials(...))
+- Database (PostgREST):
+  - supabase.table("projects").select(...).order(...).execute()
+  - supabase.table("projects").insert(...).select("*").single().execute()
+  - supabase.table("work_item").select(...).eq(...).order(...).execute()
+  - For grouped aggregations, the underlying postgrest client is used via supabase.postgrest.from_("work_item").select("project_id,count:id").group("project_id").execute()
 
 Signup does not accept a request-provided redirect URL. Configure all redirect behavior in Supabase (Site URL and Redirect URLs in the Supabase Dashboard). The backend does not need a SITE_URL variable.
 
 ## Current setup status
 
-- Backend code is integrated and ready. It reads env vars via src/api/config.py and calls Supabase Auth via src/api/supabase_client.py using httpx.
-- Database automation via SupabaseTools is temporarily blocked in this project because public.run_sql is not available in the schema cache. As a result, automated list/create/policy operations failed. We provide a SQL script and manual steps below.
+- Backend code reads env vars via src/api/config.py and creates a supabase client in src/api/supabase_client.py.
+- We provide SQL scripts and manual steps below for schema setup where needed.
 
 ## Database schema: projects, tasks, bugs
 

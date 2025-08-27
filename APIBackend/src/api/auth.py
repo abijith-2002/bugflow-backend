@@ -1,11 +1,12 @@
 from typing import Optional
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from supabase import Client as SupabaseClient
+from supabase.lib.auth.types import SignUpWithPasswordCredentials, SignInWithPasswordCredentials
 
 from .config import get_settings
-from .supabase_client import SupabaseAuthClient
+from .supabase_client import SupabaseClientProvider
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -57,18 +58,17 @@ class LoginResponse(BaseModel):
     user_id: Optional[str] = Field(default=None, description="Supabase user id")
 
 
-def get_auth_client(settings=Depends(get_settings)) -> SupabaseAuthClient:
+def get_supabase(settings=Depends(get_settings)) -> SupabaseClient:
     """
-    Build a SupabaseAuthClient using validated settings.
-    Converts configuration errors into HTTPExceptions for clearer API responses.
+    Build a supabase-py Client using validated settings. Converts configuration
+    errors into HTTPExceptions for clearer API responses.
     """
     try:
-        return SupabaseAuthClient(
-            supabase_url=settings.SUPABASE_URL,
-            supabase_key=settings.SUPABASE_ANON_KEY,
+        provider = SupabaseClientProvider(
+            supabase_url=settings.SUPABASE_URL, supabase_key=settings.SUPABASE_ANON_KEY
         )
+        return provider.client()
     except ValueError as e:
-        # Configuration problem; surface as 500 with actionable detail
         raise HTTPException(status_code=500, detail=f"Configuration error: {str(e)}")
 
 
@@ -85,60 +85,28 @@ def get_auth_client(settings=Depends(get_settings)) -> SupabaseAuthClient:
         500: {"description": "Unexpected server error"},
     },
 )
-async def signup(payload: SignUpRequest, auth_client: SupabaseAuthClient = Depends(get_auth_client)) -> SignUpResponse:
+async def signup(payload: SignUpRequest, supabase: SupabaseClient = Depends(get_supabase)) -> SignUpResponse:
     """
-    Register a new user using Supabase authentication.
-
-    Parameters:
-    - email: Email address of the new user
-    - password: Password for the new user (min 8 characters)
-    - username: Display name to store in Supabase user metadata (display_name)
-
-    Returns:
-    - message: Status message
-    - user_id: Supabase user id if available
-    - needs_verification: Indicates if email verification is required (true in most Supabase setups)
+    Register a new user using Supabase Auth via supabase-py.
     """
     try:
-        res = await auth_client.sign_up(
+        creds = SignUpWithPasswordCredentials(
             email=str(payload.email),
             password=payload.password,
-            user_metadata={"display_name": payload.username},
+            options={"data": {"display_name": payload.username}},
         )
-        # Supabase returns {user, session}. If email confirmation is required, session will be None and user exists.
-        user_id = None
-        needs_verification = True
-        if res:
-            user = res.get("user")
-            if user:
-                user_id = user.get("id")
-            session = res.get("session")
-            needs_verification = session is None
+        res = supabase.auth.sign_up(credentials=creds)
+        # res contains user and session (session is None if email verification required)
+        user_id = res.user.id if getattr(res, "user", None) else None
+        needs_verification = res.session is None
         return SignUpResponse(
             message="User registration initiated",
             user_id=user_id,
             needs_verification=needs_verification,
         )
-    except HTTPException:
-        raise
-    except httpx.HTTPStatusError as e:
-        # Propagate Supabase status and message. Avoid implying email confirmation issues
-        # unless Supabase explicitly returns that message.
-        status_code = e.response.status_code if e.response is not None else 400
-        try:
-            detail_json = e.response.json() if e.response is not None else None
-        except Exception:
-            detail_json = None
-        # Prefer structured error fields if available
-        if isinstance(detail_json, dict):
-            detail = detail_json.get("error_description") or detail_json.get("error") or detail_json.get("msg") or detail_json.get("message") or e.response.text
-        else:
-            detail = e.response.text if e.response is not None else str(e)
-        raise HTTPException(status_code=status_code, detail=detail)
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Supabase network error: {str(e)}")
-    except Exception:
-        raise HTTPException(status_code=500, detail="Unexpected server error")
+    except Exception as e:
+        # supabase-py throws generic exceptions with message; map to 400 by default
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # PUBLIC_INTERFACE
@@ -155,124 +123,32 @@ async def signup(payload: SignUpRequest, auth_client: SupabaseAuthClient = Depen
         500: {"description": "Unexpected server error"},
     },
 )
-async def login(payload: LoginRequest, auth_client: SupabaseAuthClient = Depends(get_auth_client)) -> LoginResponse:
+async def login(payload: LoginRequest, supabase: SupabaseClient = Depends(get_supabase)) -> LoginResponse:
     """
-    Authenticate a user using Supabase email/password authentication.
-
-    Parameters:
-    - email: User email
-    - password: User password
-
-    Returns:
-    - access_token: Supabase JWT
-    - token_type: bearer
-    - expires_in: Token expiry in seconds, when included
-    - refresh_token: Supabase refresh token
-    - user_id: Supabase user id
+    Authenticate using supabase-py password grant and return token information.
     """
     try:
-        # Sign in with Supabase using password grant.
-        # Supabase's newer responses may return top-level access_token and user without a nested "session".
-        res = await auth_client.sign_in(email=str(payload.email), password=payload.password)
-        if not isinstance(res, dict):
-            raise HTTPException(status_code=502, detail="Unexpected response from Supabase")
+        creds = SignInWithPasswordCredentials(
+            email=str(payload.email),
+            password=payload.password,
+        )
+        res = supabase.auth.sign_in_with_password(credentials=creds)
+        # res.session contains access_token, refresh_token, expires_in; res.user contains id
+        if not res or not res.session:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        access_token = res.session.access_token
+        refresh_token = res.session.refresh_token
+        expires_in = res.session.expires_in
+        user_id = res.user.id if getattr(res, "user", None) else None
 
-        # Preferred/legacy structure:
-        # { session: { access_token, refresh_token, expires_in, ... }, user: {...} }
-        session = res.get("session")
-        user = res.get("user")
-
-        # Newer structure observed from Supabase:
-        # { access_token, refresh_token?, expires_in?, expires_at?, token_type?, user? }
-        top_level_access = res.get("access_token")
-        top_level_token_type = res.get("token_type")
-        top_level_expires_in = res.get("expires_in")
-        top_level_expires_at = res.get("expires_at")
-        top_level_refresh = res.get("refresh_token")
-
-        # If legacy session exists, use it.
-        if session:
-            access_token = session.get("access_token")
-            refresh_token = session.get("refresh_token")
-            expires_in = session.get("expires_in")
-            user_id = user.get("id") if user else None
-
-            if not access_token:
-                raise HTTPException(status_code=502, detail="Supabase did not return an access token in session")
-
-            return LoginResponse(
-                access_token=access_token,
-                token_type="bearer",
-                expires_in=expires_in,
-                refresh_token=refresh_token,
-                user_id=user_id,
-            )
-
-        # If newer response provides access token (or strong indicators), treat as success.
-        if top_level_access or (top_level_expires_at and user and top_level_token_type):
-            access_token = top_level_access
-            refresh_token = top_level_refresh
-            expires_in = top_level_expires_in
-            user_id = (user or {}).get("id") if isinstance(user, dict) else None
-
-            if not access_token:
-                # Some variants might include token_type/expires_at but omit access_token;
-                # treat as an upstream anomaly.
-                sensitive_keys = {"access_token", "refresh_token", "provider_token", "provider_refresh_token"}
-                present_keys = [k for k in res.keys() if k not in sensitive_keys]
-                hint = f"payload keys present: {', '.join(sorted(present_keys))}" if present_keys else "payload was empty"
-                raise HTTPException(status_code=502, detail=f"Supabase response missing access_token; {hint}")
-
-            return LoginResponse(
-                access_token=access_token,
-                token_type=top_level_token_type or "bearer",
-                expires_in=expires_in,
-                refresh_token=refresh_token,
-                user_id=user_id,
-            )
-
-        # Otherwise, attempt to surface explicit error fields if provided.
-        error_fields = {}
-        for k in ("error_description", "error", "msg", "message"):
-            if k in res and res.get(k):
-                error_fields[k] = res.get(k)
-
-        if error_fields:
-            primary = (
-                error_fields.get("error_description")
-                or error_fields.get("error")
-                or error_fields.get("msg")
-                or error_fields.get("message")
-            )
-            raise HTTPException(status_code=401, detail=primary if isinstance(primary, str) else str(primary))
-
-        # Fallback diagnostic for unexpected payload without tokens or error fields.
-        sensitive_keys = {"access_token", "refresh_token", "provider_token", "provider_refresh_token"}
-        present_keys = [k for k in res.keys() if k not in sensitive_keys]
-        hint = f"payload keys present: {', '.join(sorted(present_keys))}" if present_keys else "payload was empty"
-        raise HTTPException(status_code=502, detail=f"Supabase did not return a session; {hint}")
-
+        return LoginResponse(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=expires_in,
+            refresh_token=refresh_token,
+            user_id=user_id,
+        )
     except HTTPException:
         raise
-    except httpx.HTTPStatusError as e:
-        status_code = e.response.status_code if e.response is not None else 400
-        # Attempt to parse JSON to bubble better error messages
-        try:
-            detail_json = e.response.json() if e.response is not None else None
-        except Exception:
-            detail_json = None
-        if isinstance(detail_json, dict):
-            detail = (
-                detail_json.get("error_description")
-                or detail_json.get("error")
-                or detail_json.get("msg")
-                or detail_json.get("message")
-                or e.response.text
-            )
-        else:
-            detail = e.response.text if e.response is not None else str(e)
-        raise HTTPException(status_code=status_code, detail=detail)
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Supabase network error: {str(e)}")
-    except Exception:
-        raise HTTPException(status_code=500, detail="Unexpected server error")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

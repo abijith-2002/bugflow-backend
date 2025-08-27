@@ -1,241 +1,86 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel, Field, field_validator
+from supabase import Client as SupabaseClient
 
 from .config import get_settings
+from .supabase_client import SupabaseClientProvider
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
 
-class SettingsAdapter(BaseModel):
-    """Adapter model to satisfy type checking for dependency return."""
-    SUPABASE_URL: str
-    SUPABASE_ANON_KEY: str
-
-
-class SupabaseDBClient:
-    """
-    Minimal Supabase PostgREST client implemented with httpx.
-
-    Uses Supabase REST endpoints exposed at {SUPABASE_URL}/rest/v1/{table} with 'apikey' and 'Authorization' headers.
-    SECURITY INVARIANT: This client never accepts arbitrary query parameters for project listing.
-    """
-
-    def __init__(self, supabase_url: str, supabase_key: str):
-        if not supabase_url or not supabase_key:
-            raise ValueError(
-                "Supabase URL and Key must be provided via environment variables."
-            )
-        self.base_url: str = supabase_url.rstrip("/") + "/rest/v1"
-        self.headers: dict = {
-            "apikey": supabase_key,
-            "Authorization": f"Bearer {supabase_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            # 'Prefer: return=representation' ensures created rows are returned
-            "Prefer": "return=representation",
-        }
-
-    async def select_projects_with_counts(self) -> list[dict]:
-        """
-        Fetch all projects and attach accurate tasks_count and bugs_count derived from
-        public.work_item by grouping on project_id separately for each item_type.
-        For each project:
-          - tasks_count = count of rows where project_id = project.id AND item_type = 'task'
-          - bugs_count  = count of rows where project_id = project.id AND item_type = 'bug'
-        Defaults to 0 if there are no matching work_item rows. Results are ordered by created_at desc.
-
-        PostgREST parameter rules followed:
-        - group, select, and filters are separate keys (never concatenated).
-        - Example (tasks): group=project_id, item_type=eq.task, select=project_id,count:id
-        """
-        projects_url = f"{self.base_url}/projects"
-        work_item_url = f"{self.base_url}/work_item"
-
-        # Query projects (newest first). Keep params as discrete tuples (no grouped keys).
-        proj_params: list[tuple[str, str]] = [
-            ("select", "id,name,project_key,description,colour,created_at"),
-            ("order", "created_at.desc"),
-        ]
-
-        def _safe_uuid(v) -> Optional[str]:
-            try:
-                if isinstance(v, str) and v.strip():
-                    return v
-            except Exception:
-                pass
-            return None
-
-        def _safe_int(v, default: int = 0) -> int:
-            try:
-                if v is None:
-                    return default
-                if isinstance(v, int):
-                    return v
-                if isinstance(v, float):
-                    if v != v:  # NaN
-                        return default
-                    return int(v)
-                if isinstance(v, str) and v.strip():
-                    # PostgREST may return count as number or as string; normalize
-                    return int(float(v)) if "." in v else int(v)
-            except Exception:
-                return default
-            return default
-
-        async with httpx.AsyncClient() as client:
-            # 1) Fetch all projects
-            proj_resp = await client.get(
-                projects_url, headers=self.headers, params=proj_params, timeout=20.0
-            )
-            if proj_resp.status_code >= 400:
-                try:
-                    proj_resp.raise_for_status()
-                except httpx.HTTPStatusError as ex:
-                    ex.args = (*ex.args, f"Body: {proj_resp.text}")
-                    raise
-
-            projects_json = proj_resp.json()
-            projects: list[dict] = projects_json if isinstance(projects_json, list) else []
-            for p in projects:
-                if isinstance(p, dict):
-                    p["tasks_count"] = 0
-                    p["bugs_count"] = 0
-
-            if not projects:
-                return []
-
-            # 2) Aggregate counts using two separate, PostgREST-compliant requests:
-            #    - tasks: item_type=eq.task, group=project_id, select=project_id,count:id
-            #    - bugs:  item_type=eq.bug,  group=project_id, select=project_id,count:id
-            # Ensure each query parameter key is a valid, standalone key (no concatenation).
-            tasks_params: list[tuple[str, str]] = [
-                ("select", "project_id,count:id"),
-                ("group", "project_id"),
-                ("item_type", "eq.task"),
-            ]
-            tasks_counts_by_pid: dict[str, int] = {}
-            tasks_resp = await client.get(
-                work_item_url, headers=self.headers, params=tasks_params, timeout=20.0
-            )
-            if tasks_resp.status_code >= 400:
-                try:
-                    tasks_resp.raise_for_status()
-                except httpx.HTTPStatusError as ex:
-                    ex.args = (*ex.args, f"Body: {tasks_resp.text}")
-                    raise
-            tasks_rows = tasks_resp.json()
-            if isinstance(tasks_rows, list):
-                for row in tasks_rows:
-                    if not isinstance(row, dict):
-                        continue
-                    pid = _safe_uuid(row.get("project_id"))
-                    if not pid:
-                        continue
-                    raw_count = (
-                        row.get("count")
-                        if "count" in row
-                        else row.get("count_id", row.get("count_id()"))
-                    )
-                    tasks_counts_by_pid[pid] = _safe_int(raw_count, 0)
-
-            bugs_params: list[tuple[str, str]] = [
-                ("select", "project_id,count:id"),
-                ("group", "project_id"),
-                ("item_type", "eq.bug"),
-            ]
-            bugs_counts_by_pid: dict[str, int] = {}
-            bugs_resp = await client.get(
-                work_item_url, headers=self.headers, params=bugs_params, timeout=20.0
-            )
-            if bugs_resp.status_code >= 400:
-                try:
-                    bugs_resp.raise_for_status()
-                except httpx.HTTPStatusError as ex:
-                    ex.args = (*ex.args, f"Body: {bugs_resp.text}")
-                    raise
-            bugs_rows = bugs_resp.json()
-            if isinstance(bugs_rows, list):
-                for row in bugs_rows:
-                    if not isinstance(row, dict):
-                        continue
-                    pid = _safe_uuid(row.get("project_id"))
-                    if not pid:
-                        continue
-                    raw_count = (
-                        row.get("count")
-                        if "count" in row
-                        else row.get("count_id", row.get("count_id()"))
-                    )
-                    bugs_counts_by_pid[pid] = _safe_int(raw_count, 0)
-
-            # 3) Merge counts into projects, defaulting to 0
-            for p in projects:
-                if not isinstance(p, dict):
-                    continue
-                pid = _safe_uuid(p.get("id"))
-                if not pid:
-                    p["tasks_count"] = 0
-                    p["bugs_count"] = 0
-                    continue
-                p["tasks_count"] = _safe_int(tasks_counts_by_pid.get(pid, 0), 0)
-                p["bugs_count"] = _safe_int(bugs_counts_by_pid.get(pid, 0), 0)
-
-        return projects
-
-    async def insert_project(
-        self,
-        *,
-        name: str,
-        project_key: str,
-        description: Optional[str],
-        colour: Optional[str],
-        created_at: Optional[str],
-    ) -> dict:
-        """Insert a new project and return the created record."""
-        url = f"{self.base_url}/projects"
-        body: dict = {
-            "name": name,
-            "project_key": project_key,
-            "description": description,
-            "colour": colour,
-        }
-        if created_at:
-            body["created_at"] = created_at
-
-        payload = [body]
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url, headers=self.headers, json=payload, timeout=20.0)
-            if resp.status_code >= 400:
-                try:
-                    resp.raise_for_status()
-                except httpx.HTTPStatusError as ex:
-                    ex.args = (*ex.args, f"Body: {resp.text}")
-                    raise
-            data = resp.json()
-            if isinstance(data, list) and data:
-                return data[0]
-            if isinstance(data, dict):
-                return data
-            return body
-
-
-def get_db_client(settings: SettingsAdapter = Depends(get_settings)) -> SupabaseDBClient:
-    """
-    PUBLIC_INTERFACE
-    Build a SupabaseDBClient using validated settings.
-    Converts configuration errors into HTTPExceptions for clearer API responses.
-    """
+def get_supabase(request_settings=Depends(get_settings)) -> SupabaseClient:
+    """PUBLIC_INTERFACE: Provide supabase client from settings."""
     try:
-        return SupabaseDBClient(
-            supabase_url=settings.SUPABASE_URL,
-            supabase_key=settings.SUPABASE_ANON_KEY,
+        provider = SupabaseClientProvider(
+            supabase_url=request_settings.SUPABASE_URL,
+            supabase_key=request_settings.SUPABASE_ANON_KEY,
         )
+        return provider.client()
     except ValueError as e:
         raise HTTPException(status_code=500, detail=f"Configuration error: {str(e)}")
+
+
+async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
+    """
+    Fetch projects and merge task/bug counts from work_item grouped by project_id.
+    """
+    # Get projects (newest first)
+    proj_resp = (
+        supabase.table("projects")
+        .select("id,name,project_key,description,colour,created_at")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    projects = proj_resp.data or []
+    if not projects:
+        return []
+
+    # Grouped counts using the underlying postgrest client
+    postgrest = supabase.postgrest
+    tasks_rows = (
+        postgrest.from_("work_item")
+        .select("project_id,count:id", head=False)
+        .eq("item_type", "task")
+        .group("project_id")
+        .execute()
+        .data
+        or []
+    )
+    bugs_rows = (
+        postgrest.from_("work_item")
+        .select("project_id,count:id", head=False)
+        .eq("item_type", "bug")
+        .group("project_id")
+        .execute()
+        .data
+        or []
+    )
+
+    def normalize_counts(rows) -> Dict[str, int]:
+        out: Dict[str, int] = {}
+        for r in rows:
+            pid = r.get("project_id")
+            raw = r.get("count") or r.get("count_id") or r.get("count_id()")
+            try:
+                out[str(pid)] = int(raw)
+            except Exception:
+                try:
+                    out[str(pid)] = int(float(raw)) if raw is not None else 0
+                except Exception:
+                    out[str(pid)] = 0
+        return out
+
+    tcounts = normalize_counts(tasks_rows)
+    bcounts = normalize_counts(bugs_rows)
+
+    for p in projects:
+        pid = str(p.get("id"))
+        p["tasks_count"] = tcounts.get(pid, 0)
+        p["bugs_count"] = bcounts.get(pid, 0)
+    return projects
 
 
 class Project(BaseModel):
@@ -295,44 +140,20 @@ def _ignore_query_params(req: Request) -> None:
 )
 async def list_projects(
     request: Request,
-    db: SupabaseDBClient = Depends(get_db_client),
+    supabase: SupabaseClient = Depends(get_supabase),
 ) -> List[Project]:
     """
     PUBLIC_INTERFACE
     Return all projects with aggregated task and bug counts sourced from public.work_item.
-
-    Parameters:
-    - none (query parameters are ignored)
-
-    Returns:
-    - List[Project]: Each object includes tasks_count and bugs_count with zero defaults.
     """
     try:
         _ignore_query_params(request)
-        rows = await db.select_projects_with_counts()
+        rows = await _select_projects_with_counts(supabase)
         return [Project(**row) for row in rows]
     except HTTPException:
         raise
-    except httpx.HTTPStatusError as e:
-        status_code = e.response.status_code if e.response is not None else 500
-        try:
-            detail_json = e.response.json() if e.response is not None else None
-        except Exception:
-            detail_json = None
-        if isinstance(detail_json, dict):
-            detail = (
-                detail_json.get("message")
-                or detail_json.get("error")
-                or detail_json.get("msg")
-                or e.response.text
-            )
-        else:
-            detail = e.response.text if e.response is not None else str(e)
-        raise HTTPException(status_code=status_code, detail=detail)
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Supabase network error: {str(e)}")
-    except Exception:
-        raise HTTPException(status_code=500, detail="Unexpected server error")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # PUBLIC_INTERFACE
@@ -350,42 +171,35 @@ async def list_projects(
 )
 async def create_project(
     payload: CreateProjectRequest,
-    db: SupabaseDBClient = Depends(get_db_client),
+    supabase: SupabaseClient = Depends(get_supabase),
 ) -> Project:
     """
     Create a new project. Counts default to zero for new projects.
     """
     try:
-        created = await db.insert_project(
-            name=payload.name,
-            project_key=payload.project_key,
-            description=payload.description,
-            colour=payload.colour,
-            created_at=payload.created_at.isoformat() if payload.created_at else None,
+        insert_payload = {
+            "name": payload.name,
+            "project_key": payload.project_key,
+            "description": payload.description,
+            "colour": payload.colour,
+        }
+        if payload.created_at:
+            insert_payload["created_at"] = payload.created_at.isoformat()
+
+        resp = (
+            supabase.table("projects")
+            .insert(insert_payload)
+            .select("*")
+            .single()
+            .execute()
         )
+        if not resp.data:
+            raise HTTPException(status_code=502, detail="Supabase did not return inserted project")
+        created = resp.data
         created.setdefault("tasks_count", 0)
         created.setdefault("bugs_count", 0)
         return Project(**created)
     except HTTPException:
         raise
-    except httpx.HTTPStatusError as e:
-        status_code = e.response.status_code if e.response is not None else 400
-        try:
-            detail_json = e.response.json() if e.response is not None else None
-        except Exception:
-            detail_json = None
-        if isinstance(detail_json, dict):
-            detail = (
-                detail_json.get("message")
-                or detail_json.get("error_description")
-                or detail_json.get("error")
-                or detail_json.get("msg")
-                or e.response.text
-            )
-        else:
-            detail = e.response.text if e.response is not None else str(e)
-        raise HTTPException(status_code=status_code, detail=detail)
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Supabase network error: {str(e)}")
-    except Exception:
-        raise HTTPException(status_code=500, detail="Unexpected server error")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

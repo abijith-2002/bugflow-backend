@@ -1,69 +1,27 @@
-from typing import Any, Dict
+from functools import lru_cache
 
-import httpx
+from supabase import Client, create_client  # supabase-py SDK
 
+# PUBLIC_INTERFACE
+def get_supabase_client(supabase_url: str, supabase_key: str) -> Client:
+    """Create and return a Supabase Python client.
 
-class SupabaseAuthClient:
+    This factory uses supabase-py to interact with both Auth and PostgREST.
     """
-    Minimal Supabase Auth client implemented with httpx to avoid adding heavy SDK dependencies.
-    Uses Supabase auth endpoints:
-      - POST {SUPABASE_URL}/auth/v1/signup
-      - POST {SUPABASE_URL}/auth/v1/token?grant_type=password
-    """
+    if not supabase_url or not supabase_key:
+        raise ValueError("Supabase URL and Key must be provided via environment variables.")
+    return create_client(supabase_url.strip(), supabase_key.strip())
+
+
+class SupabaseClientProvider:
+    """Helper to lazily construct and cache a Supabase client."""
 
     def __init__(self, supabase_url: str, supabase_key: str):
         if not supabase_url or not supabase_key:
             raise ValueError("Supabase URL and Key must be provided via environment variables.")
-        self.supabase_url = supabase_url.rstrip("/")
-        self.supabase_key = supabase_key
+        self._url = supabase_url
+        self._key = supabase_key
 
-        self._base_headers = {
-            "apikey": self.supabase_key,
-            "Authorization": f"Bearer {self.supabase_key}",
-            "Content-Type": "application/json",
-        }
-
-    async def sign_up(self, *, email: str, password: str, user_metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        """
-        Calls Supabase signup endpoint.
-        Docs: https://supabase.com/docs/reference/auth/signup
-
-        Parameters:
-        - email: Email address
-        - password: Password
-        - user_metadata: Optional metadata to attach to the user (e.g., {"display_name": "Alice"})
-        """
-        url = f"{self.supabase_url}/auth/v1/signup"
-        payload: Dict[str, Any] = {"email": email, "password": password}
-        if user_metadata:
-            # Supabase accepts user_metadata in the signup payload; it is stored on the auth user record
-            payload["data"] = user_metadata  # alias "data" per Supabase API (maps to user_metadata)
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url, headers=self._base_headers, json=payload, timeout=20.0)
-            # Supabase returns 200/201; on error returns 400/422 with JSON body
-            if resp.status_code >= 400:
-                # raising HTTPStatusError lets caller discern code and message
-                try:
-                    resp.raise_for_status()
-                except httpx.HTTPStatusError as ex:
-                    # attach response text for context
-                    ex.args = (*ex.args, f"Body: {resp.text}")
-                    raise
-            return resp.json()
-
-    async def sign_in(self, *, email: str, password: str) -> Dict[str, Any]:
-        """
-        Calls Supabase password grant endpoint.
-        Docs: https://supabase.com/docs/reference/auth/signinwithpassword
-        """
-        url = f"{self.supabase_url}/auth/v1/token?grant_type=password"
-        payload = {"email": email, "password": password}
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url, headers=self._base_headers, json=payload, timeout=20.0)
-            if resp.status_code >= 400:
-                try:
-                    resp.raise_for_status()
-                except httpx.HTTPStatusError as ex:
-                    ex.args = (*ex.args, f"Body: {resp.text}")
-                    raise
-            return resp.json()
+    @lru_cache(maxsize=1)
+    def client(self) -> Client:
+        return get_supabase_client(self._url, self._key)
