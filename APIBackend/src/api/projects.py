@@ -45,18 +45,46 @@ class SupabaseDBClient:
         from work_item grouped by project_id. Ensure zero counts when none exist.
         Order projects by created_at desc.
 
-        Optimization/robustness:
-        - If work_item is empty, skip aggregation queries and return zero counts.
+        Robustness goals:
+        - tasks_count and bugs_count are always integers for every project.
+        - Handle variations in Supabase/PostgREST aggregate response (e.g., count column naming).
+        - Guard against missing keys, nulls, or wrong types in responses without raising.
         """
-        # Endpoints
         projects_url = f"{self.base_url}/projects"
         work_item_url = f"{self.base_url}/work_item"
 
-        # Params for projects list
+        # PostgREST params for projects list (newest first)
         proj_params: list[tuple[str, str]] = [
             ("select", "id,name,project_key,description,colour,created_at"),
             ("order", "created_at.desc"),
         ]
+
+        def _safe_uuid(v) -> str | None:
+            # We only need stable mapping keys; treat any string-like as acceptable.
+            try:
+                if isinstance(v, str) and v.strip():
+                    return v
+            except Exception:
+                pass
+            return None
+
+        def _safe_int(v, default: int = 0) -> int:
+            try:
+                if v is None:
+                    return default
+                # Coerce common numeric representations to int
+                if isinstance(v, (int,)):
+                    return int(v)
+                if isinstance(v, float):
+                    # Ensure non-NaN finite
+                    if v != v:  # NaN check
+                        return default
+                    return int(v)
+                if isinstance(v, str) and v.strip():
+                    return int(float(v)) if "." in v else int(v)
+            except Exception:
+                return default
+            return default
 
         async with httpx.AsyncClient() as client:
             # 1) Fetch projects
@@ -69,20 +97,21 @@ class SupabaseDBClient:
                 except httpx.HTTPStatusError as ex:
                     ex.args = (*ex.args, f"Body: {proj_resp.text}")
                     raise
-            projects = proj_resp.json() or []
 
-            # Helper to set zero counts on projects
-            def attach_zero_counts() -> list[dict]:
-                for p in projects:
+            projects_raw = proj_resp.json()
+            projects: list[dict] = projects_raw if isinstance(projects_raw, list) else []
+            # Initialize counts to zero and coerce required fields minimally
+            for p in projects:
+                if isinstance(p, dict):
                     p["tasks_count"] = 0
                     p["bugs_count"] = 0
-                return projects
 
-            # 2) Check if work_item has any rows; if none, return zero counts
-            head_params: list[tuple[str, str]] = [
-                ("select", "project_id"),
-                ("limit", "1"),
-            ]
+            # Early exit if no projects; nothing else to aggregate
+            if not projects:
+                return []
+
+            # 2) Check if work_item has any rows (cheap head)
+            head_params: list[tuple[str, str]] = [("select", "project_id"), ("limit", "1")]
             head_resp = await client.get(
                 work_item_url, headers=self.headers, params=head_params, timeout=15.0
             )
@@ -92,60 +121,76 @@ class SupabaseDBClient:
                 except httpx.HTTPStatusError as ex:
                     ex.args = (*ex.args, f"Body: {head_resp.text}")
                     raise
-            head_rows = head_resp.json() or []
-            if not head_rows:
-                return attach_zero_counts()
+            head_rows = head_resp.json()
+            if not isinstance(head_rows, list) or len(head_rows) == 0:
+                # No work items at all; counts already initialized to zero
+                return projects
 
-            # 3) Perform aggregations only if table was not empty
-            # Count tasks (item_type='task') grouped by project_id
-            task_params: list[tuple[str, str]] = [
-                ("select", "project_id,count:id"),
-                ("item_type", "eq.task"),
-                ("group", "project_id"),
-            ]
-            tasks_resp = await client.get(
-                work_item_url, headers=self.headers, params=task_params, timeout=20.0
-            )
-            if tasks_resp.status_code >= 400:
-                try:
-                    tasks_resp.raise_for_status()
-                except httpx.HTTPStatusError as ex:
-                    ex.args = (*ex.args, f"Body: {tasks_resp.text}")
-                    raise
-            task_rows = tasks_resp.json() or []
-            tasks_map = {
-                r["project_id"]: int(r.get("count", 0))
-                for r in task_rows
-                if isinstance(r, dict) and "project_id" in r
-            }
+            # Helper to build a mapping project_id -> count for a given item_type
+            async def _fetch_counts_for_type(item_type_value: str) -> dict[str, int]:
+                # Use PostgREST aggregate: select=project_id,count:id and group by project_id
+                # Some PostgREST versions may return "count" or "count_id" depending on select syntax;
+                # we query both possibilities safely.
+                params: list[tuple[str, str]] = [
+                    ("select", "project_id,count:id"),
+                    ("item_type", f"eq.{item_type_value}"),
+                    ("group", "project_id"),
+                ]
+                resp = await client.get(
+                    work_item_url, headers=self.headers, params=params, timeout=20.0
+                )
+                if resp.status_code >= 400:
+                    try:
+                        resp.raise_for_status()
+                    except httpx.HTTPStatusError as ex:
+                        ex.args = (*ex.args, f"Body: {resp.text}")
+                        raise
+                data = resp.json()
+                if not isinstance(data, list):
+                    return {}
 
-            # Count bugs (item_type='bug') grouped by project_id
-            bug_params: list[tuple[str, str]] = [
-                ("select", "project_id,count:id"),
-                ("item_type", "eq.bug"),
-                ("group", "project_id"),
-            ]
-            bugs_resp = await client.get(
-                work_item_url, headers=self.headers, params=bug_params, timeout=20.0
-            )
-            if bugs_resp.status_code >= 400:
-                try:
-                    bugs_resp.raise_for_status()
-                except httpx.HTTPStatusError as ex:
-                    ex.args = (*ex.args, f"Body: {bugs_resp.text}")
-                    raise
-            bug_rows = bugs_resp.json() or []
-            bugs_map = {
-                r["project_id"]: int(r.get("count", 0))
-                for r in bug_rows
-                if isinstance(r, dict) and "project_id" in r
-            }
+                out: dict[str, int] = {}
+                for row in data:
+                    if not isinstance(row, dict):
+                        continue
+                    pid = _safe_uuid(row.get("project_id"))
+                    if not pid:
+                        continue
+                    # Normalize possible count keys
+                    raw_count = (
+                        row.get("count")
+                        if "count" in row
+                        else row.get("count_id", row.get("count_id()"))
+                    )
+                    out[pid] = _safe_int(raw_count, 0)
+                return out
 
-        # Merge counts into each project; default to 0
+            # 3) Fetch counts for tasks and bugs robustly
+            try:
+                tasks_map = await _fetch_counts_for_type("task")
+            except Exception:
+                # Fail-safe: do not break the endpoint; leave tasks_count as zeros
+                tasks_map = {}
+
+            try:
+                bugs_map = await _fetch_counts_for_type("bug")
+            except Exception:
+                # Fail-safe: do not break the endpoint; leave bugs_count as zeros
+                bugs_map = {}
+
+        # 4) Merge counts into the project list; keep zero defaults when missing
         for p in projects:
-            pid = p.get("id")
-            p["tasks_count"] = tasks_map.get(pid, 0)
-            p["bugs_count"] = bugs_map.get(pid, 0)
+            if not isinstance(p, dict):
+                continue
+            pid = _safe_uuid(p.get("id"))
+            if not pid:
+                # If id is malformed or missing, leave zeros and continue
+                p["tasks_count"] = 0
+                p["bugs_count"] = 0
+                continue
+            p["tasks_count"] = _safe_int(tasks_map.get(pid, 0), 0)
+            p["bugs_count"] = _safe_int(bugs_map.get(pid, 0), 0)
+
         return projects
 
     async def insert_project(
