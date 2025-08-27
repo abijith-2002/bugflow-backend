@@ -41,17 +41,11 @@ class SupabaseDBClient:
 
     async def select_projects_with_counts(self) -> list[dict]:
         """
-        Fetch all projects with aggregated counts for tasks and bugs
-        from unified work_item, ordered by created_at desc.
-
-        IMPORTANT (defense-in-depth):
-        - This method is intentionally parameterless and never accepts or forwards
-          any client-provided filters or query params (e.g., project_id).
-        - Only fixed, known-safe PostgREST params are used below.
-        - Do not change signature to accept filters. If filtering is ever needed,
-          implement a separate method with strict validation and explicit allowlists.
+        Fetch all project records from projects and compute tasks_count and bugs_count
+        from work_item grouped by project_id. Ensure zero counts when none exist.
+        Order projects by created_at desc.
         """
-        # 1) Fetch base projects list (no filters; fixed allowlist of params)
+        # Fetch projects
         projects_url = f"{self.base_url}/projects"
         proj_params: list[tuple[str, str]] = [
             ("select", "id,name,project_key,description,colour,created_at"),
@@ -70,16 +64,15 @@ class SupabaseDBClient:
                     raise
             projects = proj_resp.json() or []
 
-            # 2) Aggregate tasks_count
-            tasks_url = f"{self.base_url}/work_item"
+            # Count tasks (item_type='task') grouped by project_id
+            work_item_url = f"{self.base_url}/work_item"
             task_params: list[tuple[str, str]] = [
                 ("select", "project_id,count:id"),
                 ("item_type", "eq.task"),
                 ("group", "project_id"),
             ]
-
             tasks_resp = await client.get(
-                tasks_url, headers=self.headers, params=task_params, timeout=20.0
+                work_item_url, headers=self.headers, params=task_params, timeout=20.0
             )
             if tasks_resp.status_code >= 400:
                 try:
@@ -89,20 +82,19 @@ class SupabaseDBClient:
                     raise
             task_rows = tasks_resp.json() or []
             tasks_map = {
-                row["project_id"]: row.get("count", 0)
-                for row in task_rows
-                if isinstance(row, dict) and "project_id" in row
+                r["project_id"]: int(r.get("count", 0))
+                for r in task_rows
+                if isinstance(r, dict) and "project_id" in r
             }
 
-            # 3) Aggregate bugs_count
+            # Count bugs (item_type='bug') grouped by project_id
             bug_params: list[tuple[str, str]] = [
                 ("select", "project_id,count:id"),
                 ("item_type", "eq.bug"),
                 ("group", "project_id"),
             ]
-
             bugs_resp = await client.get(
-                tasks_url, headers=self.headers, params=bug_params, timeout=20.0
+                work_item_url, headers=self.headers, params=bug_params, timeout=20.0
             )
             if bugs_resp.status_code >= 400:
                 try:
@@ -112,16 +104,16 @@ class SupabaseDBClient:
                     raise
             bug_rows = bugs_resp.json() or []
             bugs_map = {
-                row["project_id"]: row.get("count", 0)
-                for row in bug_rows
-                if isinstance(row, dict) and "project_id" in row
+                r["project_id"]: int(r.get("count", 0))
+                for r in bug_rows
+                if isinstance(r, dict) and "project_id" in r
             }
 
-        # 4) Merge counts into projects
-        for row in projects:
-            pid = row.get("id")
-            row["tasks_count"] = int(tasks_map.get(pid, 0))
-            row["bugs_count"] = int(bugs_map.get(pid, 0))
+        # Merge counts into each project; default to 0
+        for p in projects:
+            pid = p.get("id")
+            p["tasks_count"] = tasks_map.get(pid, 0)
+            p["bugs_count"] = bugs_map.get(pid, 0)
         return projects
 
     async def insert_project(
@@ -133,9 +125,7 @@ class SupabaseDBClient:
         colour: Optional[str],
         created_at: Optional[str],
     ) -> dict:
-        """
-        Insert a new project row and return the created record.
-        """
+        """Insert a new project and return the created record."""
         url = f"{self.base_url}/projects"
         body: dict = {
             "name": name,
@@ -143,7 +133,6 @@ class SupabaseDBClient:
             "description": description,
             "colour": colour,
         }
-        # Allow client-provided created_at if present (ISO 8601 string). Otherwise DB default will populate.
         if created_at:
             body["created_at"] = created_at
 
@@ -157,12 +146,10 @@ class SupabaseDBClient:
                     ex.args = (*ex.args, f"Body: {resp.text}")
                     raise
             data = resp.json()
-            # With Prefer: return=representation, result is a list with the created row
             if isinstance(data, list) and data:
                 return data[0]
             if isinstance(data, dict):
                 return data
-            # Fallback if nothing returned
             return body
 
 
@@ -189,7 +176,6 @@ class Project(BaseModel):
     description: Optional[str] = Field(default=None, description="Project description")
     colour: Optional[str] = Field(default=None, description="Project colour (CSS color or hex code)")
     created_at: datetime = Field(..., description="Creation timestamp")
-    # Aggregated counts derived from public.work_item
     tasks_count: int = Field(default=0, description="Total tasks count (item_type='task') for this project")
     bugs_count: int = Field(default=0, description="Total bugs count (item_type='bug') for this project")
 
@@ -208,28 +194,18 @@ class CreateProjectRequest(BaseModel):
     @field_validator("project_key")
     @classmethod
     def project_key_format(cls, v: str) -> str:
-        # Basic format: letters, numbers, dashes and underscores only; uppercase recommended but not enforced
         allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
         if not v or any(ch not in allowed for ch in v):
             raise ValueError("project_key may contain only letters, numbers, '-' and '_'")
         return v
 
 
-def _drop_all_query_params(req: Request) -> None:
+def _ignore_query_params(req: Request) -> None:
     """
-    Drop/sanitize any incoming query parameters for this endpoint by not using them at all.
-
-    Rationale:
-    - Some clients/frameworks may automatically attach query params like 'project_id'.
-    - This endpoint must ALWAYS return all projects and MUST NOT forward any client-provided
-      filters to Supabase/PostgREST to avoid parse errors such as 'failed to parse filter (project_id)'.
-    - We deliberately ignore req.query_params and never pass them to the DB layer.
-
-    SECURITY NOTE:
-    - This helper is a guardrail: do not read from req.query_params in this route.
+    Ignore any incoming query params; this endpoint does not support filtering.
+    This prevents accidental forwarding of client-supplied filters to Supabase.
     """
-    # Explicit noop: no read/forwarding of req.query_params
-    _ = req  # satisfy linters; indicates intentional non-use
+    _ = req  # explicitly unused
 
 
 # PUBLIC_INTERFACE
@@ -240,7 +216,7 @@ def _drop_all_query_params(req: Request) -> None:
     summary="List projects",
     description=(
         "Fetch all projects from Supabase ordered by creation time (most recent first). "
-        "This endpoint ignores all query parameters (including project_id); no filters are forwarded to Supabase."
+        "This endpoint ignores all query parameters; no filters are forwarded to Supabase."
     ),
     responses={
         200: {"description": "List of projects"},
@@ -253,21 +229,16 @@ async def list_projects(
 ) -> List[Project]:
     """
     PUBLIC_INTERFACE
-    Get all projects with tasks_count and bugs_count aggregated from work_item by item_type.
+    Return all projects with aggregated task and bug counts sourced from public.work_item.
 
-    Strict behavior:
-    - Any provided query parameters (e.g., 'project_id', 'id', etc.) are ignored and dropped.
-      The endpoint ALWAYS returns all projects without applying client-provided filters.
-    - No request arguments are passed into the database calls for listing.
+    Parameters:
+    - none (query parameters are ignored)
 
     Returns:
-    - List of Project objects, each including tasks_count and bugs_count.
+    - List[Project]: Each object includes tasks_count and bugs_count with zero defaults.
     """
     try:
-        # Explicitly drop/sanitize any incoming query parameters to avoid accidental propagation.
-        _drop_all_query_params(request)
-
-        # Build fixed Supabase queries in the DB client; no request params are ever used here.
+        _ignore_query_params(request)
         rows = await db.select_projects_with_counts()
         return [Project(**row) for row in rows]
     except HTTPException:
@@ -312,9 +283,7 @@ async def create_project(
     db: SupabaseDBClient = Depends(get_db_client),
 ) -> Project:
     """
-    Create a new project.
-
-    Returns the created project. tasks_count and bugs_count will be 0 for a new project.
+    Create a new project. Counts default to zero for new projects.
     """
     try:
         created = await db.insert_project(
