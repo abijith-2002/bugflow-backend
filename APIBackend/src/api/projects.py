@@ -44,15 +44,22 @@ class SupabaseDBClient:
         Fetch all project records from projects and compute tasks_count and bugs_count
         from work_item grouped by project_id. Ensure zero counts when none exist.
         Order projects by created_at desc.
+
+        Optimization/robustness:
+        - If work_item is empty, skip aggregation queries and return zero counts.
         """
-        # Fetch projects
+        # Endpoints
         projects_url = f"{self.base_url}/projects"
+        work_item_url = f"{self.base_url}/work_item"
+
+        # Params for projects list
         proj_params: list[tuple[str, str]] = [
             ("select", "id,name,project_key,description,colour,created_at"),
             ("order", "created_at.desc"),
         ]
 
         async with httpx.AsyncClient() as client:
+            # 1) Fetch projects
             proj_resp = await client.get(
                 projects_url, headers=self.headers, params=proj_params, timeout=20.0
             )
@@ -64,8 +71,33 @@ class SupabaseDBClient:
                     raise
             projects = proj_resp.json() or []
 
+            # Helper to set zero counts on projects
+            def attach_zero_counts() -> list[dict]:
+                for p in projects:
+                    p["tasks_count"] = 0
+                    p["bugs_count"] = 0
+                return projects
+
+            # 2) Check if work_item has any rows; if none, return zero counts
+            head_params: list[tuple[str, str]] = [
+                ("select", "project_id"),
+                ("limit", "1"),
+            ]
+            head_resp = await client.get(
+                work_item_url, headers=self.headers, params=head_params, timeout=15.0
+            )
+            if head_resp.status_code >= 400:
+                try:
+                    head_resp.raise_for_status()
+                except httpx.HTTPStatusError as ex:
+                    ex.args = (*ex.args, f"Body: {head_resp.text}")
+                    raise
+            head_rows = head_resp.json() or []
+            if not head_rows:
+                return attach_zero_counts()
+
+            # 3) Perform aggregations only if table was not empty
             # Count tasks (item_type='task') grouped by project_id
-            work_item_url = f"{self.base_url}/work_item"
             task_params: list[tuple[str, str]] = [
                 ("select", "project_id,count:id"),
                 ("item_type", "eq.task"),
