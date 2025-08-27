@@ -9,12 +9,14 @@ Fields used:
 - description (text, nullable)
 - colour (varchar(30), nullable)
 - created_at (timestamptz) - default now()
+- tasks_count (integer) - aggregated from work_item where item_type='task'
+- bugs_count (integer) - aggregated from work_item where item_type='bug'
 
 Required environment variables (see .env.example):
 - SUPABASE_URL
 - SUPABASE_ANON_KEY
 
-Assumed Supabase tables:
+Supabase tables required:
 - projects
   - id uuid primary key default gen_random_uuid()
   - name varchar(120) not null
@@ -22,20 +24,17 @@ Assumed Supabase tables:
   - description text null
   - created_at timestamptz not null default now()
   - colour varchar(30) null
-- tasks (optional for counts)
-  - id uuid primary key default gen_random_uuid()
+- work_item (unified tasks/bugs)
   - project_id uuid not null references public.projects(id)
-- bugs (optional for counts)
-  - id uuid primary key default gen_random_uuid()
-  - project_id uuid not null references public.projects(id)
+  - item_type text not null check (in 'task','bug')
+  - other columns as per assets/sql/work_items_setup.sql
 
 Notes:
-- For the /projects GET endpoint to return "tasks" and "bugs" counts, ensure the foreign key names in Supabase are:
-  - tasks.project_id -> projects.id (constraint name: tasks_project_id_fkey)
-  - bugs.project_id -> projects.id (constraint name: bugs_project_id_fkey)
-- If your constraint names differ, update the select in src/api/projects.py accordingly:
-  tasks:tasks!<your_tasks_fk_name>(count), bugs:bugs!<your_bugs_fk_name>(count)
-- RLS: configure according to your needs. For public read/write during development, you can temporarily disable RLS or add permissive policies.
+- The /projects GET endpoint now returns tasks_count and bugs_count by aggregating the unified public.work_item table:
+  - tasks_count: count of rows with item_type='task' per project_id
+  - bugs_count: count of rows with item_type='bug' per project_id
+- You do NOT need separate tasks/bugs tables for counts anymore.
+- Ensure RLS policies on work_item allow SELECT for your use case (dev-permissive policies provided in assets/sql/work_items_setup.sql).
 
 Endpoints:
 
@@ -49,7 +48,9 @@ GET /projects
       "project_key":"APP",
       "description":"Desc",
       "colour":"#FF8800",
-      "created_at":"2025-01-01T00:00:00Z"
+      "created_at":"2025-01-01T00:00:00Z",
+      "tasks_count": 3,
+      "bugs_count": 1
     }
   ]
 
@@ -69,7 +70,9 @@ POST /projects
     "project_key":"APP",
     "description":"Optional",
     "colour":"#FF8800",
-    "created_at":"2025-01-01T00:00:00Z"
+    "created_at":"2025-01-01T00:00:00Z",
+    "tasks_count": 0,
+    "bugs_count": 0
   }
 
 Troubleshooting:

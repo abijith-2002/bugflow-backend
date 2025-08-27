@@ -40,43 +40,72 @@ class SupabaseDBClient:
 
     async def select_projects_with_counts(self) -> list[dict]:
         """
-        Fetch all projects with aggregated counts for tasks and bugs, ordered by created_at desc.
+        Fetch all projects with aggregated counts for tasks and bugs from unified work_item, ordered by created_at desc.
 
-        This assumes you have tables 'tasks' and 'bugs' with a foreign key column 'project_id' referencing projects.id.
-        Supabase PostgREST supports count via a related subselect using the form:
-          related_table!foreign_key(count)
-        and aliasing via count:alias.
+        We aggregate via PostgREST views:
+        - tasks_count: count of work_item where item_type='task' per project
+        - bugs_count: count of work_item where item_type='bug' per project
 
-        If your schema uses different table names or foreign key names, adjust the select parameter accordingly.
+        This implementation performs two lightweight aggregate queries against work_item
+        and merges the results in Python to avoid requiring DB views or RPC setup.
         """
-        url = f"{self.base_url}/projects"
-        # Using PostgREST embedded resources with count aggregation.
-        # Format: related_table!fk(count) and alias counts via count:tasks and count:bugs
-        params = {
-            "select": (
-                "id,name,project_key,description,colour,created_at,"
-                "tasks:tasks!tasks_project_id_fkey(count),"
-                "bugs:bugs!bugs_project_id_fkey(count)"
-            ),
+        # 1) Fetch base projects list
+        projects_url = f"{self.base_url}/projects"
+        proj_params = {
+            "select": "id,name,project_key,description,colour,created_at",
             "order": "created_at.desc",
         }
+
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=self.headers, params=params, timeout=20.0)
-            if resp.status_code >= 400:
+            proj_resp = await client.get(projects_url, headers=self.headers, params=proj_params, timeout=20.0)
+            if proj_resp.status_code >= 400:
                 try:
-                    resp.raise_for_status()
+                    proj_resp.raise_for_status()
                 except httpx.HTTPStatusError as ex:
-                    ex.args = (*ex.args, f"Body: {resp.text}")
+                    ex.args = (*ex.args, f"Body: {proj_resp.text}")
                     raise
-            data = resp.json()
-            # Normalize counts: Supabase returns objects like {"count": 3} for each alias.
-            for row in data:
-                # When there are no related rows, PostgREST may return null. Coerce to 0.
-                tasks_obj = row.get("tasks")
-                bugs_obj = row.get("bugs")
-                row["tasks"] = (tasks_obj or {}).get("count", 0) if isinstance(tasks_obj, dict) else (0 if tasks_obj is None else tasks_obj)
-                row["bugs"] = (bugs_obj or {}).get("count", 0) if isinstance(bugs_obj, dict) else (0 if bugs_obj is None else bugs_obj)
-            return data
+            projects = proj_resp.json()
+
+            # 2) Aggregate tasks_count
+            tasks_url = f"{self.base_url}/work_item"
+            # select project_id and count where item_type = 'task' grouped by project_id
+            task_params = {
+                "select": "project_id,count:id",
+                "item_type": "eq.task",
+                "group": "project_id",
+            }
+            tasks_resp = await client.get(tasks_url, headers=self.headers, params=task_params, timeout=20.0)
+            if tasks_resp.status_code >= 400:
+                try:
+                    tasks_resp.raise_for_status()
+                except httpx.HTTPStatusError as ex:
+                    ex.args = (*ex.args, f"Body: {tasks_resp.text}")
+                    raise
+            task_rows = tasks_resp.json() or []
+            tasks_map = {row["project_id"]: row.get("count", 0) for row in task_rows if isinstance(row, dict) and "project_id" in row}
+
+            # 3) Aggregate bugs_count
+            bug_params = {
+                "select": "project_id,count:id",
+                "item_type": "eq.bug",
+                "group": "project_id",
+            }
+            bugs_resp = await client.get(tasks_url, headers=self.headers, params=bug_params, timeout=20.0)
+            if bugs_resp.status_code >= 400:
+                try:
+                    bugs_resp.raise_for_status()
+                except httpx.HTTPStatusError as ex:
+                    ex.args = (*ex.args, f"Body: {bugs_resp.text}")
+                    raise
+            bug_rows = bugs_resp.json() or []
+            bugs_map = {row["project_id"]: row.get("count", 0) for row in bug_rows if isinstance(row, dict) and "project_id" in row}
+
+        # 4) Merge counts into projects
+        for row in projects:
+            pid = row.get("id")
+            row["tasks_count"] = int(tasks_map.get(pid, 0))
+            row["bugs_count"] = int(bugs_map.get(pid, 0))
+        return projects
 
     async def insert_project(
         self,
@@ -143,9 +172,9 @@ class Project(BaseModel):
     description: Optional[str] = Field(default=None, description="Project description")
     colour: Optional[str] = Field(default=None, description="Project colour (CSS color or hex code)")
     created_at: datetime = Field(..., description="Creation timestamp")
-    # Add counts for dashboard cards
-    tasks: int = Field(default=0, description="Total tasks count associated with this project")
-    bugs: int = Field(default=0, description="Total bugs count associated with this project")
+    # Aggregated counts derived from public.work_item
+    tasks_count: int = Field(default=0, description="Total tasks count (item_type='task') for this project")
+    bugs_count: int = Field(default=0, description="Total bugs count (item_type='bug') for this project")
 
 
 class CreateProjectRequest(BaseModel):
@@ -175,7 +204,7 @@ class CreateProjectRequest(BaseModel):
     response_model=List[Project],
     status_code=status.HTTP_200_OK,
     summary="List projects",
-    description="Fetch the list of projects from Supabase ordered by creation time (most recent first), including aggregated 'tasks' and 'bugs' counts.",
+    description="Fetch the list of projects from Supabase ordered by creation time (most recent first), including tasks_count and bugs_count aggregated from work_item.",
     responses={
         200: {"description": "List of projects"},
         500: {"description": "Unexpected server error"},
@@ -183,11 +212,7 @@ class CreateProjectRequest(BaseModel):
 )
 async def list_projects(db: SupabaseDBClient = Depends(get_db_client)) -> List[Project]:
     """
-    Get all projects with tasks and bugs counts aggregated from related tables.
-
-    Returns:
-    - A list of Project objects fetched from Supabase with fields:
-      id, name, project_key, description, colour, created_at, tasks, bugs
+    Get all projects with tasks_count and bugs_count aggregated from work_item by item_type.
     """
     try:
         rows = await db.select_projects_with_counts()
@@ -236,20 +261,7 @@ async def create_project(
     """
     Create a new project.
 
-    Parameters:
-    - name: Project name (required)
-    - project_key: Short unique project key (required)
-    - description: Optional description
-    - colour: Optional colour (CSS/hex)
-    - created_at: Optional creation timestamp; if omitted DB default is used
-
-    Returns:
-    - The created Project object including id and created_at.
-
-    Error handling:
-    - 400 for validation or upstream Supabase errors
-    - 502 for network errors
-    - 500 for unexpected server errors
+    Returns the created project. tasks_count and bugs_count will be 0 for a new project.
     """
     try:
         created = await db.insert_project(
@@ -259,9 +271,8 @@ async def create_project(
             colour=payload.colour,
             created_at=payload.created_at.isoformat() if payload.created_at else None,
         )
-        # When creating, tasks/bugs counts default to 0
-        created.setdefault("tasks", 0)
-        created.setdefault("bugs", 0)
+        created.setdefault("tasks_count", 0)
+        created.setdefault("bugs_count", 0)
         return Project(**created)
     except HTTPException:
         raise
