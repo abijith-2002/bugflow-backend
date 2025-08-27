@@ -68,12 +68,12 @@ alter table public.work_item enable row level security;
 do $$
 begin
   if not exists (
-    select 1 from pg_policies where schemaname='public' and tablename='work_item' and polname='Allow select for all (dev)'
+    select 1 from pg_policies where schemaname='public' and tablename='work_item' and policyname='Allow select for all (dev)'
   ) then
     create policy "Allow select for all (dev)" on public.work_item for select using (true);
   end if;
   if not exists (
-    select 1 from pg_policies where schemaname='public' and tablename='work_item' and polname='Allow insert for all (dev)'
+    select 1 from pg_policies where schemaname='public' and tablename='work_item' and policyname='Allow insert for all (dev)'
   ) then
     create policy "Allow insert for all (dev)" on public.work_item for insert with check (true);
   end if;
