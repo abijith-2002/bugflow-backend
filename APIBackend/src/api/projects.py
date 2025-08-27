@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel, Field, field_validator
 
 from .config import get_settings
@@ -41,9 +41,14 @@ class SupabaseDBClient:
     async def select_projects_with_counts(self) -> list[dict]:
         """
         Fetch all projects with aggregated counts for tasks and bugs
-        from unified work_item, ordered by created_at desc. No filtering by project_id.
+        from unified work_item, ordered by created_at desc.
+
+        IMPORTANT:
+        - This method is intentionally parameterless and never accepts or forwards
+          any client-provided filters or query params (e.g., project_id).
+        - Only fixed, known-safe PostgREST params are used below.
         """
-        # 1) Fetch base projects list (no filters)
+        # 1) Fetch base projects list (no filters; fixed allowlist of params)
         projects_url = f"{self.base_url}/projects"
         proj_params: list[tuple[str, str]] = [
             ("select", "id,name,project_key,description,colour,created_at"),
@@ -193,32 +198,56 @@ class CreateProjectRequest(BaseModel):
         return v
 
 
+def _drop_all_query_params(req: Request) -> None:
+    """
+    Drop/sanitize any incoming query parameters for this endpoint by not using them at all.
+
+    Rationale:
+    - Some clients/frameworks may automatically attach query params like 'project_id'.
+    - This endpoint must ALWAYS return all projects and MUST NOT forward any client-provided
+      filters to Supabase/PostgREST to avoid parse errors such as 'failed to parse filter (project_id)'.
+    - We deliberately ignore req.query_params and never pass them to the DB layer.
+    """
+    # No-op: we just purposely do not use req.query_params anywhere.
+    # If logging is desired in future, it can be added here to record unexpected params.
+    _ = req  # satisfy linters; indicates intentional non-use
+
+
 # PUBLIC_INTERFACE
 @router.get(
     "",
     response_model=List[Project],
     status_code=status.HTTP_200_OK,
     summary="List projects",
-    description="Fetch all projects from Supabase ordered by creation time (most recent first). This endpoint ignores any project_id query parameter.",
+    description=(
+        "Fetch all projects from Supabase ordered by creation time (most recent first). "
+        "This endpoint ignores all query parameters (including project_id); no filters are forwarded to Supabase."
+    ),
     responses={
         200: {"description": "List of projects"},
         500: {"description": "Unexpected server error"},
     },
 )
 async def list_projects(
+    request: Request,
     db: SupabaseDBClient = Depends(get_db_client),
 ) -> List[Project]:
     """
     PUBLIC_INTERFACE
     Get all projects with tasks_count and bugs_count aggregated from work_item by item_type.
 
-    Note:
-    - Any provided 'project_id' query parameter will be ignored; the endpoint always returns all projects.
+    Behavior:
+    - Any provided query parameters (e.g., 'project_id', 'id', etc.) are ignored and dropped.
+      The endpoint ALWAYS returns all projects without applying client-provided filters.
 
     Returns:
     - List of Project objects, each including tasks_count and bugs_count.
     """
     try:
+        # Explicitly drop/sanitize any incoming query parameters to avoid accidental propagation.
+        _drop_all_query_params(request)
+
+        # Build fixed Supabase queries in the DB client; no request params are ever used here.
         rows = await db.select_projects_with_counts()
         return [Project(**row) for row in rows]
     except HTTPException:
