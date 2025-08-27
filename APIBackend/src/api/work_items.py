@@ -38,9 +38,16 @@ class SupabaseDBClient:
         Fetch work items, optionally filtered by project_id, newest first.
         """
         url = f"{self.base_url}/work_item"
-        params: dict = {"order": "created_at.desc"}
-        if project_id:
-            params["project_id"] = f"eq.{project_id}"
+
+        # Build params carefully to avoid PostgREST filter parsing issues.
+        # PostgREST expects project_id=eq.<uuid> as a string query value.
+        # Using a list of tuples preserves ordering and avoids accidental coercion.
+        params: list[tuple[str, str]] = [("order", "created_at.desc")]
+
+        # Only add filter if project_id looks like a non-empty string.
+        if isinstance(project_id, str) and project_id.strip():
+            params.append(("project_id", f"eq.{project_id.strip()}"))
+
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, headers=self.headers, params=params, timeout=20.0)
             if resp.status_code >= 400:
