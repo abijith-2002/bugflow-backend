@@ -19,62 +19,74 @@ Signup does not accept a request-provided redirect URL. Configure all redirect b
 ## Current setup status
 
 - Backend code is integrated and ready. It reads env vars via src/api/config.py and calls Supabase Auth via src/api/supabase_client.py using httpx.
-- Database inspection/creation via automation is pending due to a temporary tools RPC issue (public.run_sql not available), which blocked the required SupabaseTools steps.
+- Database automation via SupabaseTools is temporarily blocked in this project because public.run_sql is not available in the schema cache. As a result, automated list/create/policy operations failed. We provide a SQL script and manual steps below.
 
-## Required actions in Supabase Dashboard
+## Database schema: projects, tasks, bugs
 
-1) Authentication > URL Configuration
+Required by /projects GET and POST endpoints (see APIBackend/PROJECTS_USAGE.md):
+
+Table: public.projects
+- id uuid primary key default gen_random_uuid()
+- name varchar(120) not null
+- project_key varchar(20) not null unique
+- description text null
+- created_at timestamptz not null default now()
+- colour varchar(30) null
+
+RLS (development-permissive; tighten for production):
+- SELECT policy: using (true)
+- INSERT policy: with check (true)
+
+You can execute the standardized SQL from this repository:
+- Projects table: bugflow-backend/assets/sql/projects_setup.sql
+- Tasks & Bugs minimal tables for counts: bugflow-backend/assets/sql/tasks_bugs_setup.sql
+- How: In Supabase Dashboard > SQL Editor > New query, paste the content of the file(s) and click Run.
+
+## Manual setup steps (Supabase Dashboard)
+
+1) SQL
+   - Open SQL Editor and run the contents of assets/sql/projects_setup.sql.
+
+2) Verify table & policies
+   - Table Editor: confirm public.projects exists with columns id, name, description, created_at.
+   - Policies tab: confirm two policies:
+     * "Allow select for all (dev)" for SELECT using (true)
+     * "Allow insert for all (dev)" for INSERT with check (true)
+   - Ensure RLS is enabled on projects.
+
+3) Authentication > URL Configuration
    - Site URL: set to your frontend URL (dev: http://localhost:3000/).
    - Additional Redirect URLs: include http://localhost:3000/** and your production domain /**.
 
-2) Authentication > Email Templates
-   - Optionally customize emails. Ensure links point to your configured Site URL.
+4) Authentication > Email Templates
+   - Optional customization.
 
-3) Policies and Tables (optional for future profile data)
-   - If you plan to store user profile metadata, create a `profiles` table with columns:
-     - id uuid default gen_random_uuid() primary key
-     - user_id uuid not null unique references auth.users(id) on delete cascade
-     - full_name text
-     - avatar_url text
-     - created_at timestamptz default now()
-     - updated_at timestamptz default now()
-   - Example RLS policies (enable RLS and allow users to select/update only their own row):
-     - SELECT: using (auth.uid() = user_id)
-     - INSERT: with check (auth.uid() = user_id)
-     - UPDATE: using (auth.uid() = user_id)
-     - DELETE: using (auth.uid() = user_id)
+5) Environment variables
+   - Backend (APIBackend/.env):
+     * SUPABASE_URL
+     * SUPABASE_ANON_KEY
+   - Frontend (React, if applicable):
+     * REACT_APP_SUPABASE_URL
+     * REACT_APP_SUPABASE_ANON_KEY
 
-When the Supabase tools adapter is available, we will:
-- List existing tables.
-- Create the `profiles` table if missing.
-- Apply RLS policies via SQL.
+## Verification checklist
 
-## Environment variables
+- Call GET /projects: should return [] initially (200). If tasks/bugs tables exist, each project row will include "tasks" and "bugs" counts (0 when none).
+- Call POST /projects with body {"name":"Test","description":"Optional"}:
+  - Expect 201 with created row including id (uuid) and created_at (timestamp).
+- Call GET /projects again: should include the new project, ordered by created_at desc.
 
-Backend (.env for APIBackend):
-- SUPABASE_URL
-- SUPABASE_ANON_KEY
+If you encounter 401/403 on /projects:
+- Check that RLS is enabled and the dev policies exist as above.
+- Confirm the API key used is the anon key and has access to public schema.
 
-Frontend (React) will use:
-- REACT_APP_SUPABASE_URL
-- REACT_APP_SUPABASE_ANON_KEY
+## Troubleshooting
 
-Make sure the frontend uses a getURL() utility if it needs to construct URLs dynamically; the backend will not accept a redirect URL for signup.
-
-## Testing locally
-
-- Copy APIBackend/.env.example to APIBackend/.env and set real values.
-- Start backend and call:
-  - POST /auth/signup
-  - POST /auth/login
-- Inspect responses and verify signup emails from Supabase use the Site URL configured in the Supabase dashboard.
-
-Troubleshooting login and email confirmation:
-- If Supabase project has email confirmation disabled, login with correct credentials should return 200 and include session/access_token.
-- If you still receive a 4xx error mentioning "email not confirmed", that message originates from Supabase (check Authentication settings in the dashboard). The backend does not enforce confirmation checks; it forwards Supabase's error payload.
-- If you receive a 200 without a session (unexpected), the backend will return 502 "Supabase did not return a session"; verify your Supabase project configuration and keys.
+- SupabaseTools errors: If you see PGRST202 about public.run_sql not found, it means the RPC helper is not available in your project. Use the provided SQL script via the SQL Editor.
+- 500 Configuration error from backend: Ensure APIBackend/.env has SUPABASE_URL and SUPABASE_ANON_KEY.
+- 4xx from Supabase: Check table name, columns, and RLS policies.
 
 ## Notes
 
 - Never hardcode URLs in auth flows; use environment variables and Supabase URL configuration.
-- In production, restrict CORS origins to your frontend domain(s).
+- In production, replace dev-permissive RLS with policies scoped to auth.uid() or project membership.

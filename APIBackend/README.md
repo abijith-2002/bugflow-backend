@@ -15,3 +15,4 @@ Required environment variables
 Notes
 - See SUPABASE_SETUP.md for dashboard configuration.
 - See AUTH_USAGE.md for endpoint usage and troubleshooting tips.
+- See PROJECTS_USAGE.md for projects table and endpoints (/projects GET, POST).
