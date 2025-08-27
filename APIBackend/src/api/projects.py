@@ -42,7 +42,8 @@ class SupabaseDBClient:
     async def select_projects_with_counts(self) -> list[dict]:
         """
         Fetch all projects and attach accurate tasks_count and bugs_count derived from
-        public.work_item by grouping on (project_id, item_type). For each project:
+        public.work_item by grouping on project_id separately for each item_type.
+        For each project:
           - tasks_count = count of rows where project_id = project.id AND item_type = 'task'
           - bugs_count  = count of rows where project_id = project.id AND item_type = 'bug'
         Defaults to 0 if there are no matching work_item rows. Results are ordered by created_at desc.
@@ -50,7 +51,7 @@ class SupabaseDBClient:
         projects_url = f"{self.base_url}/projects"
         work_item_url = f"{self.base_url}/work_item"
 
-        # Query projects (newest first)
+        # Query projects (newest first). Keep params as discrete tuples (no grouped keys).
         proj_params: list[tuple[str, str]] = [
             ("select", "id,name,project_key,description,colour,created_at"),
             ("order", "created_at.desc"),
@@ -75,6 +76,7 @@ class SupabaseDBClient:
                         return default
                     return int(v)
                 if isinstance(v, str) and v.strip():
+                    # PostgREST may return count as number or as string; normalize
                     return int(float(v)) if "." in v else int(v)
             except Exception:
                 return default
@@ -102,13 +104,10 @@ class SupabaseDBClient:
             if not projects:
                 return []
 
-            # 2) Aggregate counts using two separate, PostgREST-compliant requests
-            # One for tasks (item_type=eq.task) grouped by project_id, and one for bugs (item_type=eq.bug).
-            # This avoids any ambiguity or parse errors from multi-field filters/groupings.
-            def _fetch_counts_for_type(item_type_value: str) -> dict[str, int]:
-                return {}
-
-            # Fetch tasks counts
+            # 2) Aggregate counts using two separate, PostgREST-compliant requests:
+            #    - tasks: item_type=eq.task, group=project_id, select=project_id,count:id
+            #    - bugs:  item_type=eq.bug,  group=project_id, select=project_id,count:id
+            # Ensure each query parameter key is a valid, standalone key (no concatenation).
             tasks_params: list[tuple[str, str]] = [
                 ("select", "project_id,count:id"),
                 ("group", "project_id"),
@@ -139,7 +138,6 @@ class SupabaseDBClient:
                     )
                     tasks_counts_by_pid[pid] = _safe_int(raw_count, 0)
 
-            # Fetch bugs counts
             bugs_params: list[tuple[str, str]] = [
                 ("select", "project_id,count:id"),
                 ("group", "project_id"),
