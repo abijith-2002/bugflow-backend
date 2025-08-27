@@ -38,13 +38,26 @@ class SupabaseDBClient:
             "Prefer": "return=representation",
         }
 
-    async def select_projects(self) -> list[dict]:
+    async def select_projects_with_counts(self) -> list[dict]:
         """
-        Fetch all projects ordered by created_at desc.
+        Fetch all projects with aggregated counts for tasks and bugs, ordered by created_at desc.
+
+        This assumes you have tables 'tasks' and 'bugs' with a foreign key column 'project_id' referencing projects.id.
+        Supabase PostgREST supports count via a related subselect using the form:
+          related_table!foreign_key(count)
+        and aliasing via count:alias.
+
+        If your schema uses different table names or foreign key names, adjust the select parameter accordingly.
         """
         url = f"{self.base_url}/projects"
+        # Using PostgREST embedded resources with count aggregation.
+        # Format: related_table!fk(count) and alias counts via count:tasks and count:bugs
         params = {
-            "select": "id,name,project_key,description,colour,created_at",
+            "select": (
+                "id,name,project_key,description,colour,created_at,"
+                "tasks:tasks!tasks_project_id_fkey(count),"
+                "bugs:bugs!bugs_project_id_fkey(count)"
+            ),
             "order": "created_at.desc",
         }
         async with httpx.AsyncClient() as client:
@@ -55,8 +68,15 @@ class SupabaseDBClient:
                 except httpx.HTTPStatusError as ex:
                     ex.args = (*ex.args, f"Body: {resp.text}")
                     raise
-            # On success, Supabase returns a JSON array
-            return resp.json()
+            data = resp.json()
+            # Normalize counts: Supabase returns objects like {"count": 3} for each alias.
+            for row in data:
+                # When there are no related rows, PostgREST may return null. Coerce to 0.
+                tasks_obj = row.get("tasks")
+                bugs_obj = row.get("bugs")
+                row["tasks"] = (tasks_obj or {}).get("count", 0) if isinstance(tasks_obj, dict) else (0 if tasks_obj is None else tasks_obj)
+                row["bugs"] = (bugs_obj or {}).get("count", 0) if isinstance(bugs_obj, dict) else (0 if bugs_obj is None else bugs_obj)
+            return data
 
     async def insert_project(
         self,
@@ -123,6 +143,9 @@ class Project(BaseModel):
     description: Optional[str] = Field(default=None, description="Project description")
     colour: Optional[str] = Field(default=None, description="Project colour (CSS color or hex code)")
     created_at: datetime = Field(..., description="Creation timestamp")
+    # Add counts for dashboard cards
+    tasks: int = Field(default=0, description="Total tasks count associated with this project")
+    bugs: int = Field(default=0, description="Total bugs count associated with this project")
 
 
 class CreateProjectRequest(BaseModel):
@@ -152,7 +175,7 @@ class CreateProjectRequest(BaseModel):
     response_model=List[Project],
     status_code=status.HTTP_200_OK,
     summary="List projects",
-    description="Fetch the list of projects from Supabase ordered by creation time (most recent first).",
+    description="Fetch the list of projects from Supabase ordered by creation time (most recent first), including aggregated 'tasks' and 'bugs' counts.",
     responses={
         200: {"description": "List of projects"},
         500: {"description": "Unexpected server error"},
@@ -160,14 +183,14 @@ class CreateProjectRequest(BaseModel):
 )
 async def list_projects(db: SupabaseDBClient = Depends(get_db_client)) -> List[Project]:
     """
-    Get all projects.
+    Get all projects with tasks and bugs counts aggregated from related tables.
 
     Returns:
-    - A list of Project objects fetched from Supabase.
+    - A list of Project objects fetched from Supabase with fields:
+      id, name, project_key, description, colour, created_at, tasks, bugs
     """
     try:
-        rows = await db.select_projects()
-        # Pydantic will coerce to the Project schema, raising if invalid
+        rows = await db.select_projects_with_counts()
         return [Project(**row) for row in rows]
     except HTTPException:
         raise
@@ -236,7 +259,9 @@ async def create_project(
             colour=payload.colour,
             created_at=payload.created_at.isoformat() if payload.created_at else None,
         )
-        # Ensure required fields exist; Supabase should return id and created_at
+        # When creating, tasks/bugs counts default to 0
+        created.setdefault("tasks", 0)
+        created.setdefault("bugs", 0)
         return Project(**created)
     except HTTPException:
         raise

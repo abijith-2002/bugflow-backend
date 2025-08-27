@@ -21,7 +21,7 @@ Signup does not accept a request-provided redirect URL. Configure all redirect b
 - Backend code is integrated and ready. It reads env vars via src/api/config.py and calls Supabase Auth via src/api/supabase_client.py using httpx.
 - Database automation via SupabaseTools is temporarily blocked in this project because public.run_sql is not available in the schema cache. As a result, automated list/create/policy operations failed. We provide a SQL script and manual steps below.
 
-## Database schema: projects
+## Database schema: projects, tasks, bugs
 
 Required by /projects GET and POST endpoints (see APIBackend/PROJECTS_USAGE.md):
 
@@ -38,8 +38,9 @@ RLS (development-permissive; tighten for production):
 - INSERT policy: with check (true)
 
 You can execute the standardized SQL from this repository:
-- Path: bugflow-backend/assets/sql/projects_setup.sql
-- How: In Supabase Dashboard > SQL Editor > New query, paste the content of the file and click Run.
+- Projects table: bugflow-backend/assets/sql/projects_setup.sql
+- Tasks & Bugs minimal tables for counts: bugflow-backend/assets/sql/tasks_bugs_setup.sql
+- How: In Supabase Dashboard > SQL Editor > New query, paste the content of the file(s) and click Run.
 
 ## Manual setup steps (Supabase Dashboard)
 
@@ -70,7 +71,7 @@ You can execute the standardized SQL from this repository:
 
 ## Verification checklist
 
-- Call GET /projects: should return [] initially (200).
+- Call GET /projects: should return [] initially (200). If tasks/bugs tables exist, each project row will include "tasks" and "bugs" counts (0 when none).
 - Call POST /projects with body {"name":"Test","description":"Optional"}:
   - Expect 201 with created row including id (uuid) and created_at (timestamp).
 - Call GET /projects again: should include the new project, ordered by created_at desc.

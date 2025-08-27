@@ -14,15 +14,27 @@ Required environment variables (see .env.example):
 - SUPABASE_URL
 - SUPABASE_ANON_KEY
 
-Assumed Supabase table:
-- Table name: projects
-- Columns:
+Assumed Supabase tables:
+- projects
   - id uuid primary key default gen_random_uuid()
   - name varchar(120) not null
   - project_key varchar(20) not null unique
   - description text null
   - created_at timestamptz not null default now()
   - colour varchar(30) null
+- tasks (optional for counts)
+  - id uuid primary key default gen_random_uuid()
+  - project_id uuid not null references public.projects(id)
+- bugs (optional for counts)
+  - id uuid primary key default gen_random_uuid()
+  - project_id uuid not null references public.projects(id)
+
+Notes:
+- For the /projects GET endpoint to return "tasks" and "bugs" counts, ensure the foreign key names in Supabase are:
+  - tasks.project_id -> projects.id (constraint name: tasks_project_id_fkey)
+  - bugs.project_id -> projects.id (constraint name: bugs_project_id_fkey)
+- If your constraint names differ, update the select in src/api/projects.py accordingly:
+  tasks:tasks!<your_tasks_fk_name>(count), bugs:bugs!<your_bugs_fk_name>(count)
 - RLS: configure according to your needs. For public read/write during development, you can temporarily disable RLS or add permissive policies.
 
 Endpoints:
