@@ -38,23 +38,22 @@ class SupabaseDBClient:
             "Prefer": "return=representation",
         }
 
-    async def select_projects_with_counts(self) -> list[dict]:
+    async def select_projects_with_counts(self, project_id: Optional[str] = None) -> list[dict]:
         """
-        Fetch all projects with aggregated counts for tasks and bugs from unified work_item, ordered by created_at desc.
+        Fetch projects (optionally filtered by id) with aggregated counts for tasks and bugs
+        from unified work_item, ordered by created_at desc.
 
-        We aggregate via PostgREST views:
-        - tasks_count: count of work_item where item_type='task' per project
-        - bugs_count: count of work_item where item_type='bug' per project
-
-        This implementation performs two lightweight aggregate queries against work_item
-        and merges the results in Python to avoid requiring DB views or RPC setup.
+        We aggregate via two PostgREST queries against work_item and merge results in Python.
         """
-        # 1) Fetch base projects list
+        # 1) Fetch base projects list (optionally filter by id if provided)
         projects_url = f"{self.base_url}/projects"
-        proj_params = {
-            "select": "id,name,project_key,description,colour,created_at",
-            "order": "created_at.desc",
-        }
+        proj_params: list[tuple[str, str]] = [
+            ("select", "id,name,project_key,description,colour,created_at"),
+            ("order", "created_at.desc"),
+        ]
+        if isinstance(project_id, str) and project_id.strip():
+            # PostgREST expects id=eq.<uuid> to filter by primary key
+            proj_params.append(("id", f"eq.{project_id.strip()}"))
 
         async with httpx.AsyncClient() as client:
             proj_resp = await client.get(projects_url, headers=self.headers, params=proj_params, timeout=20.0)
@@ -69,11 +68,14 @@ class SupabaseDBClient:
             # 2) Aggregate tasks_count
             tasks_url = f"{self.base_url}/work_item"
             # select project_id and count where item_type = 'task' grouped by project_id
-            task_params = {
-                "select": "project_id,count:id",
-                "item_type": "eq.task",
-                "group": "project_id",
-            }
+            task_params: list[tuple[str, str]] = [
+                ("select", "project_id,count:id"),
+                ("item_type", "eq.task"),
+                ("group", "project_id"),
+            ]
+            if isinstance(project_id, str) and project_id.strip():
+                task_params.append(("project_id", f"eq.{project_id.strip()}"))
+
             tasks_resp = await client.get(tasks_url, headers=self.headers, params=task_params, timeout=20.0)
             if tasks_resp.status_code >= 400:
                 try:
@@ -85,11 +87,14 @@ class SupabaseDBClient:
             tasks_map = {row["project_id"]: row.get("count", 0) for row in task_rows if isinstance(row, dict) and "project_id" in row}
 
             # 3) Aggregate bugs_count
-            bug_params = {
-                "select": "project_id,count:id",
-                "item_type": "eq.bug",
-                "group": "project_id",
-            }
+            bug_params: list[tuple[str, str]] = [
+                ("select", "project_id,count:id"),
+                ("item_type", "eq.bug"),
+                ("group", "project_id"),
+            ]
+            if isinstance(project_id, str) and project_id.strip():
+                bug_params.append(("project_id", f"eq.{project_id.strip()}"))
+
             bugs_resp = await client.get(tasks_url, headers=self.headers, params=bug_params, timeout=20.0)
             if bugs_resp.status_code >= 400:
                 try:
@@ -210,12 +215,23 @@ class CreateProjectRequest(BaseModel):
         500: {"description": "Unexpected server error"},
     },
 )
-async def list_projects(db: SupabaseDBClient = Depends(get_db_client)) -> List[Project]:
+async def list_projects(
+    project_id: Optional[str] = None,
+    db: SupabaseDBClient = Depends(get_db_client),
+) -> List[Project]:
     """
-    Get all projects with tasks_count and bugs_count aggregated from work_item by item_type.
+    PUBLIC_INTERFACE
+    Get projects (optionally filtered by project_id) with tasks_count and bugs_count aggregated
+    from work_item by item_type.
+
+    Parameters:
+    - project_id: Optional project UUID to filter by (maps to projects.id)
+
+    Returns:
+    - List of Project objects, each including tasks_count and bugs_count.
     """
     try:
-        rows = await db.select_projects_with_counts()
+        rows = await db.select_projects_with_counts(project_id=project_id)
         return [Project(**row) for row in rows]
     except HTTPException:
         raise
