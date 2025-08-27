@@ -38,22 +38,17 @@ class SupabaseDBClient:
             "Prefer": "return=representation",
         }
 
-    async def select_projects_with_counts(self, project_id: Optional[str] = None) -> list[dict]:
+    async def select_projects_with_counts(self) -> list[dict]:
         """
-        Fetch projects (optionally filtered by id) with aggregated counts for tasks and bugs
-        from unified work_item, ordered by created_at desc.
-
-        We aggregate via two PostgREST queries against work_item and merge results in Python.
+        Fetch all projects with aggregated counts for tasks and bugs
+        from unified work_item, ordered by created_at desc. No filtering by project_id.
         """
-        # 1) Fetch base projects list (optionally filter by id if provided)
+        # 1) Fetch base projects list (no filters)
         projects_url = f"{self.base_url}/projects"
         proj_params: list[tuple[str, str]] = [
             ("select", "id,name,project_key,description,colour,created_at"),
             ("order", "created_at.desc"),
         ]
-        if isinstance(project_id, str) and project_id.strip():
-            # PostgREST expects id=eq.<uuid> to filter by primary key
-            proj_params.append(("id", f"eq.{project_id.strip()}"))
 
         async with httpx.AsyncClient() as client:
             proj_resp = await client.get(projects_url, headers=self.headers, params=proj_params, timeout=20.0)
@@ -67,14 +62,11 @@ class SupabaseDBClient:
 
             # 2) Aggregate tasks_count
             tasks_url = f"{self.base_url}/work_item"
-            # select project_id and count where item_type = 'task' grouped by project_id
             task_params: list[tuple[str, str]] = [
                 ("select", "project_id,count:id"),
                 ("item_type", "eq.task"),
                 ("group", "project_id"),
             ]
-            if isinstance(project_id, str) and project_id.strip():
-                task_params.append(("project_id", f"eq.{project_id.strip()}"))
 
             tasks_resp = await client.get(tasks_url, headers=self.headers, params=task_params, timeout=20.0)
             if tasks_resp.status_code >= 400:
@@ -92,8 +84,6 @@ class SupabaseDBClient:
                 ("item_type", "eq.bug"),
                 ("group", "project_id"),
             ]
-            if isinstance(project_id, str) and project_id.strip():
-                bug_params.append(("project_id", f"eq.{project_id.strip()}"))
 
             bugs_resp = await client.get(tasks_url, headers=self.headers, params=bug_params, timeout=20.0)
             if bugs_resp.status_code >= 400:
@@ -209,29 +199,27 @@ class CreateProjectRequest(BaseModel):
     response_model=List[Project],
     status_code=status.HTTP_200_OK,
     summary="List projects",
-    description="Fetch the list of projects from Supabase ordered by creation time (most recent first), including tasks_count and bugs_count aggregated from work_item.",
+    description="Fetch all projects from Supabase ordered by creation time (most recent first). This endpoint ignores any project_id query parameter.",
     responses={
         200: {"description": "List of projects"},
         500: {"description": "Unexpected server error"},
     },
 )
 async def list_projects(
-    project_id: Optional[str] = None,
     db: SupabaseDBClient = Depends(get_db_client),
 ) -> List[Project]:
     """
     PUBLIC_INTERFACE
-    Get projects (optionally filtered by project_id) with tasks_count and bugs_count aggregated
-    from work_item by item_type.
+    Get all projects with tasks_count and bugs_count aggregated from work_item by item_type.
 
-    Parameters:
-    - project_id: Optional project UUID to filter by (maps to projects.id)
+    Note:
+    - Any provided 'project_id' query parameter will be ignored; the endpoint always returns all projects.
 
     Returns:
     - List of Project objects, each including tasks_count and bugs_count.
     """
     try:
-        rows = await db.select_projects_with_counts(project_id=project_id)
+        rows = await db.select_projects_with_counts()
         return [Project(**row) for row in rows]
     except HTTPException:
         raise
