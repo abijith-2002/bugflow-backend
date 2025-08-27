@@ -3,8 +3,8 @@
 This backend uses the official supabase-py SDK for authentication and database operations.
 
 1) Configure environment
-   - Copy .env.example to .env
-   - Set the following variables:
+   - Copy .env.example to .env in bugflow-backend/APIBackend/
+   - Set the following variables in .env:
      - SUPABASE_URL
      - SUPABASE_ANON_KEY
 
@@ -14,9 +14,12 @@ This backend uses the official supabase-py SDK for authentication and database o
      * Add Redirect URLs: http://localhost:3000/** and your production domain /**
    - Optionally update Email Templates.
 
-3) (Optional) Create profiles table and RLS policies
-   - Create a `profiles` table keyed by user_id (references auth.users(id))
-   - Enable RLS with row-level policies so each user can read/write only their own row.
+3) Create database schema
+   - Use the Supabase SQL Editor to run these scripts in order:
+     1. assets/sql/projects_setup.sql
+     2. assets/sql/work_items_setup.sql
+     3. (Optional) assets/sql/tasks_bugs_setup.sql
+   - Note: The automation RPC (public.run_sql) is not installed in your project (PGRST202), so run scripts manually via the dashboard.
 
 4) Endpoints
    - POST /auth/signup (supabase-py: auth.sign_up)
@@ -30,7 +33,6 @@ This backend uses the official supabase-py SDK for authentication and database o
    - Email confirmation requirement is fully controlled by Supabase project settings. The backend forwards Supabase responses as-is.
 
 Troubleshooting
-- If POST /auth/signup returns a 500 with "Configuration error: Missing required environment variables...", ensure APIBackend/.env is present and contains values for:
-  SUPABASE_URL, SUPABASE_ANON_KEY.
-- If signup/login returns a 4xx with a JSON/text body, that is a Supabase error (e.g., weak password, email already registered, URL config). Review the response body and adjust inputs/settings accordingly.
-- If project/task counts are incorrect or you see errors with grouped aggregations, ensure the work_item schema has been created per assets/sql/work_items_setup.sql. Optionally, create a database view that pre-aggregates counts and query it via supabase.table("project_counts_view").
+- 500 Configuration error: Ensure APIBackend/.env has SUPABASE_URL and SUPABASE_ANON_KEY (see .env.example).
+- 4xx from Supabase: Check table definitions, constraints, and RLS policies. Use assets/sql/*.sql scripts as source of truth.
+- PGRST202 errors from tooling: Execute SQL via the Supabase Dashboard; the helper RPC is not present by default.

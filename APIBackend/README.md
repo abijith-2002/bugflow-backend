@@ -12,6 +12,11 @@ Required environment variables
 - SUPABASE_URL
 - SUPABASE_ANON_KEY
 
+Quick start
+- Copy .env.example to .env in this directory and set SUPABASE_URL and SUPABASE_ANON_KEY.
+- Start the server (example): uvicorn src.api.main:app --reload
+- See SUPABASE_SETUP.md for Supabase dashboard configuration and SQL scripts to run.
+
 Database/Auth SDK
 - This backend uses the official supabase-py client for:
   - Authentication (signup/login)

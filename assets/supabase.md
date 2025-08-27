@@ -1,7 +1,8 @@
 # Supabase Integration for APIBackend
 
-This backend integrates with Supabase using the official supabase-py SDK for Auth and Database. It requires:
+This backend integrates with Supabase using the official supabase-py SDK for Auth and Database.
 
+Required environment variables (set in bugflow-backend/APIBackend/.env — see .env.example):
 - SUPABASE_URL: e.g., https://your-project-id.supabase.co
 - SUPABASE_ANON_KEY: Project anon public key
 
@@ -13,81 +14,66 @@ Key SDK usage:
   - supabase.table("projects").select(...).order(...).execute()
   - supabase.table("projects").insert(...).select("*").single().execute()
   - supabase.table("work_item").select(...).eq(...).order(...).execute()
-  - For grouped aggregations, the underlying postgrest client is used via supabase.postgrest.from_("work_item").select("project_id,count:id").group("project_id").execute()
+  - Grouped aggregations via the underlying client:
+    supabase.postgrest.from_("work_item").select("project_id,count:id").group("project_id").execute()
 
-Signup does not accept a request-provided redirect URL. Configure all redirect behavior in Supabase (Site URL and Redirect URLs in the Supabase Dashboard). The backend does not need a SITE_URL variable.
+Signup does not accept a request-provided redirect URL. Configure redirect behavior in Supabase (Site URL and Redirect URLs in the Supabase Dashboard). The backend does not need a SITE_URL variable.
 
 ## Current setup status
 
-- Backend code reads env vars via src/api/config.py and creates a supabase client in src/api/supabase_client.py.
-- We provide SQL scripts and manual steps below for schema setup where needed.
+- Backend reads env vars via src/api/config.py, creates a client in src/api/supabase_client.py.
+- SQL scripts for schema setup are provided under bugflow-backend/assets/sql/.
+- Note: SupabaseTools RPC public.run_sql is not present in your project (PGRST202). Use the SQL Editor to run scripts.
 
-## Database schema: projects, tasks, bugs
+## Database schema
 
-Required by /projects GET and POST endpoints (see APIBackend/PROJECTS_USAGE.md):
+Core tables used by this backend:
+- public.projects (see assets/sql/projects_setup.sql)
+- public.work_item (see assets/sql/work_items_setup.sql)
 
-Table: public.projects
-- id uuid primary key default gen_random_uuid()
-- name varchar(120) not null
-- project_key varchar(20) not null unique
-- description text null
-- created_at timestamptz not null default now()
-- colour varchar(30) null
+Optional:
+- public.tasks and public.bugs (legacy/minimal counts table; not required since work_item provides counts by item_type) — see assets/sql/tasks_bugs_setup.sql
 
-RLS (development-permissive; tighten for production):
-- SELECT policy: using (true)
-- INSERT policy: with check (true)
-
-You can execute the standardized SQL from this repository:
-- Projects table: bugflow-backend/assets/sql/projects_setup.sql
-- Tasks & Bugs minimal tables for counts: bugflow-backend/assets/sql/tasks_bugs_setup.sql
-- How: In Supabase Dashboard > SQL Editor > New query, paste the content of the file(s) and click Run.
+RLS (development-permissive; tighten for production) is included in the scripts.
 
 ## Manual setup steps (Supabase Dashboard)
 
-1) SQL
-   - Open SQL Editor and run the contents of assets/sql/projects_setup.sql.
+1) Run SQL:
+   - Open SQL Editor and run assets/sql/projects_setup.sql
+   - Then run assets/sql/work_items_setup.sql
+   - Optionally run assets/sql/tasks_bugs_setup.sql
 
-2) Verify table & policies
-   - Table Editor: confirm public.projects exists with columns id, name, description, created_at.
-   - Policies tab: confirm two policies:
-     * "Allow select for all (dev)" for SELECT using (true)
-     * "Allow insert for all (dev)" for INSERT with check (true)
-   - Ensure RLS is enabled on projects.
+2) Verify:
+   - public.projects exists with required columns & RLS policies.
+   - public.work_item exists with composite PK (project_id, id), generated item_key, trigger for per-project id increment, and dev RLS policies.
 
-3) Authentication > URL Configuration
-   - Site URL: set to your frontend URL (dev: http://localhost:3000/).
-   - Additional Redirect URLs: include http://localhost:3000/** and your production domain /**.
+3) Authentication > URL Configuration:
+   - Site URL: your frontend URL (e.g., http://localhost:3000/)
+   - Additional Redirect URLs: http://localhost:3000/** and your production domain /**
 
-4) Authentication > Email Templates
-   - Optional customization.
+4) Email templates (optional): Configure as needed.
 
-5) Environment variables
-   - Backend (APIBackend/.env):
-     * SUPABASE_URL
-     * SUPABASE_ANON_KEY
-   - Frontend (React, if applicable):
-     * REACT_APP_SUPABASE_URL
-     * REACT_APP_SUPABASE_ANON_KEY
+5) Environment variables:
+   - Backend: set SUPABASE_URL and SUPABASE_ANON_KEY in APIBackend/.env
+   - Frontend (if applicable): REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY
 
 ## Verification checklist
 
-- Call GET /projects: should return [] initially (200). If tasks/bugs tables exist, each project row will include "tasks" and "bugs" counts (0 when none).
-- Call POST /projects with body {"name":"Test","description":"Optional"}:
-  - Expect 201 with created row including id (uuid) and created_at (timestamp).
-- Call GET /projects again: should include the new project, ordered by created_at desc.
+- GET /projects returns [] initially (200).
+- POST /projects creates a project and returns it with defaults.
+- GET /work-items returns [] initially; POST /work-items creates a task/bug and returns item_key like KAI-1.
 
-If you encounter 401/403 on /projects:
-- Check that RLS is enabled and the dev policies exist as above.
-- Confirm the API key used is the anon key and has access to public schema.
+If you encounter 401/403:
+- Ensure RLS is enabled and dev policies exist as per scripts.
+- Confirm the anon key is used and has access to public schema.
 
 ## Troubleshooting
 
-- SupabaseTools errors: If you see PGRST202 about public.run_sql not found, it means the RPC helper is not available in your project. Use the provided SQL script via the SQL Editor.
-- 500 Configuration error from backend: Ensure APIBackend/.env has SUPABASE_URL and SUPABASE_ANON_KEY.
-- 4xx from Supabase: Check table name, columns, and RLS policies.
+- PGRST202 (public.run_sql not found): This is expected if the helper RPC isn't installed. Execute SQL via the dashboard.
+- 500 Configuration error: Ensure APIBackend/.env has SUPABASE_URL and SUPABASE_ANON_KEY (see .env.example).
+- 4xx from Supabase: Check table names, columns, constraints, and RLS policies.
 
 ## Notes
 
-- Never hardcode URLs in auth flows; use environment variables and Supabase URL configuration.
-- In production, replace dev-permissive RLS with policies scoped to auth.uid() or project membership.
+- Never hardcode URLs in auth flows; rely on Supabase dashboard URL configuration.
+- Replace permissive RLS with policies based on auth.uid() for production.
