@@ -1,0 +1,29 @@
+{
+  "note": "This addendum documents the new /work-items endpoints. Re-generate the main openapi.json via src/api/generate_openapi.py for a fully synchronized spec.",
+  "paths": {
+    "/work-items": {
+      "get": {
+        "tags": ["Work Items"],
+        "summary": "List work items",
+        "description": "List all work items, optionally filtered by project_id.",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Filter by project UUID"
+          }
+        ]
+      },
+      "post": {
+        "tags": ["Work Items"],
+        "summary": "Create a work item (task or bug)",
+        "description": "Create a work item. The database trigger assigns the next numeric id per project and item_key is generated.",
+        "requestBody": {
+          "required": true
+        }
+      }
+    }
+  }
+}

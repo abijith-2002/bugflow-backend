@@ -16,3 +16,4 @@ Notes
 - See SUPABASE_SETUP.md for dashboard configuration.
 - See AUTH_USAGE.md for endpoint usage and troubleshooting tips.
 - See PROJECTS_USAGE.md for projects table and endpoints (/projects GET, POST).
+- See assets/sql/work_items_setup.sql and assets/supabase_work_items.md for unified work_item table, ID generation, and endpoints (/work-items GET, POST).
