@@ -1,4 +1,4 @@
--- Unified Work Item table with per-project incremental IDs and automatic item_key generation
+-- Unified Work Item table with per-project incremental IDs and automatic item_key generation (via triggers)
 -- Save-only migration: do not execute from this repository tooling.
 -- Execute in your Supabase project's SQL Editor manually when ready.
 
@@ -9,7 +9,7 @@ create extension if not exists pgcrypto;
 
 -- Idempotent cleanup for development re-runs (safe no-ops if first run)
 
--- Drop trigger if it exists (ignore if table doesn't exist yet)
+-- Drop triggers if they exist (ignore if table doesn't exist yet)
 do $$
 begin
   if exists (
@@ -20,25 +20,32 @@ begin
   ) then
     drop trigger work_item_assign_incremental_id on public.work_item;
   end if;
+  if exists (
+    select 1 from information_schema.triggers
+    where event_object_schema = 'public'
+      and event_object_table = 'work_item'
+      and trigger_name = 'work_item_set_item_key'
+  ) then
+    drop trigger work_item_set_item_key on public.work_item;
+  end if;
 exception when undefined_table then
   null; -- table does not exist yet
 end $$;
 
--- Drop function if it exists
+-- Drop functions if they exist
 drop function if exists public.fn_work_item_assign_incremental_id cascade;
+drop function if exists public.fn_work_item_set_item_key cascade;
 
 -- Create unified table
 -- Notes:
 -- - id is an integer that increments per project (not a global sequence).
--- - item_key is a generated column: <PROJECT_KEY>-<id> (e.g., KAI-1).
+-- - item_key is a plain text column, computed/maintained by trigger as <PROJECT_KEY>-<id> (e.g., KAI-1).
 -- - Composite primary key: (project_id, id).
 -- - Unique constraint on item_key for global uniqueness.
 create table if not exists public.work_item (
   id integer not null,
   project_id uuid not null references public.projects(id) on delete cascade,
-  item_key text generated always as (
-    (select p.project_key from public.projects p where p.id = project_id)::text || '-' || id::text
-  ) stored,
+  item_key text null, -- set by trigger
   item_type text not null check (item_type in ('task','bug')),
   title varchar(200) not null,
   description text null,
@@ -93,11 +100,39 @@ begin
 end;
 $$;
 
+-- Function: Set or update item_key based on project's project_key and the per-project id.
+-- Executes after id is assigned so it can use NEW.id.
+create or replace function public.fn_work_item_set_item_key()
+returns trigger
+language plpgsql
+as $$
+declare
+  pkey text;
+begin
+  -- Fetch the project key for the referenced project_id
+  select project_key into pkey from public.projects where id = NEW.project_id;
+  if pkey is null then
+    -- Project not found; prevent insert/update to avoid dangling/invalid key
+    raise exception 'Project with id % not found when computing item_key', NEW.project_id;
+  end if;
+
+  NEW.item_key := pkey || '-' || NEW.id::text;
+  return NEW;
+end;
+$$;
+
 -- Trigger: before insert, compute the next id per project.
 create trigger work_item_assign_incremental_id
 before insert on public.work_item
 for each row
 execute function public.fn_work_item_assign_incremental_id();
+
+-- Trigger: before insert or update, compute/refresh item_key after id/project_id are finalized in NEW
+-- Using BEFORE so NEW is writable; item_key stays consistent on id/project_id changes.
+create trigger work_item_set_item_key
+before insert or update of id, project_id on public.work_item
+for each row
+execute function public.fn_work_item_set_item_key();
 
 -- Verification snippets (use in Supabase SQL Editor as needed):
 -- -- Create a project and note the returned UUID
