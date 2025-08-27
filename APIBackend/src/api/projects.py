@@ -102,43 +102,73 @@ class SupabaseDBClient:
             if not projects:
                 return []
 
-            # 2) Aggregate counts in one request grouped by project_id and item_type
-            # PostgREST aggregation syntax: select=project_id,item_type,count:id&group=project_id,item_type
-            agg_params: list[tuple[str, str]] = [
-                ("select", "project_id,item_type,count:id"),
-                ("group", "project_id,item_type"),
-            ]
-            agg_resp = await client.get(
-                work_item_url, headers=self.headers, params=agg_params, timeout=20.0
-            )
-            if agg_resp.status_code >= 400:
-                try:
-                    agg_resp.raise_for_status()
-                except httpx.HTTPStatusError as ex:
-                    ex.args = (*ex.args, f"Body: {agg_resp.text}")
-                    raise
+            # 2) Aggregate counts using two separate, PostgREST-compliant requests
+            # One for tasks (item_type=eq.task) grouped by project_id, and one for bugs (item_type=eq.bug).
+            # This avoids any ambiguity or parse errors from multi-field filters/groupings.
+            def _fetch_counts_for_type(item_type_value: str) -> dict[str, int]:
+                return {}
 
-            agg_rows = agg_resp.json()
-            # Build mapping: project_id -> {"task": n, "bug": m}
-            counts_by_pid: dict[str, dict[str, int]] = {}
-            if isinstance(agg_rows, list):
-                for row in agg_rows:
+            # Fetch tasks counts
+            tasks_params: list[tuple[str, str]] = [
+                ("select", "project_id,count:id"),
+                ("group", "project_id"),
+                ("item_type", "eq.task"),
+            ]
+            tasks_counts_by_pid: dict[str, int] = {}
+            tasks_resp = await client.get(
+                work_item_url, headers=self.headers, params=tasks_params, timeout=20.0
+            )
+            if tasks_resp.status_code >= 400:
+                try:
+                    tasks_resp.raise_for_status()
+                except httpx.HTTPStatusError as ex:
+                    ex.args = (*ex.args, f"Body: {tasks_resp.text}")
+                    raise
+            tasks_rows = tasks_resp.json()
+            if isinstance(tasks_rows, list):
+                for row in tasks_rows:
                     if not isinstance(row, dict):
                         continue
                     pid = _safe_uuid(row.get("project_id"))
-                    item_type = row.get("item_type")
-                    if not pid or item_type not in ("task", "bug"):
+                    if not pid:
                         continue
-
-                    # Normalize count key name variations
                     raw_count = (
                         row.get("count")
                         if "count" in row
                         else row.get("count_id", row.get("count_id()"))
                     )
-                    n = _safe_int(raw_count, 0)
-                    bucket = counts_by_pid.setdefault(pid, {})
-                    bucket[item_type] = n
+                    tasks_counts_by_pid[pid] = _safe_int(raw_count, 0)
+
+            # Fetch bugs counts
+            bugs_params: list[tuple[str, str]] = [
+                ("select", "project_id,count:id"),
+                ("group", "project_id"),
+                ("item_type", "eq.bug"),
+            ]
+            bugs_counts_by_pid: dict[str, int] = {}
+            bugs_resp = await client.get(
+                work_item_url, headers=self.headers, params=bugs_params, timeout=20.0
+            )
+            if bugs_resp.status_code >= 400:
+                try:
+                    bugs_resp.raise_for_status()
+                except httpx.HTTPStatusError as ex:
+                    ex.args = (*ex.args, f"Body: {bugs_resp.text}")
+                    raise
+            bugs_rows = bugs_resp.json()
+            if isinstance(bugs_rows, list):
+                for row in bugs_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    pid = _safe_uuid(row.get("project_id"))
+                    if not pid:
+                        continue
+                    raw_count = (
+                        row.get("count")
+                        if "count" in row
+                        else row.get("count_id", row.get("count_id()"))
+                    )
+                    bugs_counts_by_pid[pid] = _safe_int(raw_count, 0)
 
             # 3) Merge counts into projects, defaulting to 0
             for p in projects:
@@ -149,9 +179,8 @@ class SupabaseDBClient:
                     p["tasks_count"] = 0
                     p["bugs_count"] = 0
                     continue
-                bucket = counts_by_pid.get(pid, {})
-                p["tasks_count"] = _safe_int(bucket.get("task", 0), 0)
-                p["bugs_count"] = _safe_int(bucket.get("bug", 0), 0)
+                p["tasks_count"] = _safe_int(tasks_counts_by_pid.get(pid, 0), 0)
+                p["bugs_count"] = _safe_int(bugs_counts_by_pid.get(pid, 0), 0)
 
         return projects
 
