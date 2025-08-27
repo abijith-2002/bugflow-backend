@@ -21,6 +21,7 @@ class SupabaseDBClient:
     Minimal Supabase PostgREST client implemented with httpx.
 
     Uses Supabase REST endpoints exposed at {SUPABASE_URL}/rest/v1/{table} with 'apikey' and 'Authorization' headers.
+    SECURITY INVARIANT: This client never accepts arbitrary query parameters for project listing.
     """
 
     def __init__(self, supabase_url: str, supabase_key: str):
@@ -28,8 +29,8 @@ class SupabaseDBClient:
             raise ValueError(
                 "Supabase URL and Key must be provided via environment variables."
             )
-        self.base_url = supabase_url.rstrip("/") + "/rest/v1"
-        self.headers = {
+        self.base_url: str = supabase_url.rstrip("/") + "/rest/v1"
+        self.headers: dict = {
             "apikey": supabase_key,
             "Authorization": f"Bearer {supabase_key}",
             "Content-Type": "application/json",
@@ -43,10 +44,12 @@ class SupabaseDBClient:
         Fetch all projects with aggregated counts for tasks and bugs
         from unified work_item, ordered by created_at desc.
 
-        IMPORTANT:
+        IMPORTANT (defense-in-depth):
         - This method is intentionally parameterless and never accepts or forwards
           any client-provided filters or query params (e.g., project_id).
         - Only fixed, known-safe PostgREST params are used below.
+        - Do not change signature to accept filters. If filtering is ever needed,
+          implement a separate method with strict validation and explicit allowlists.
         """
         # 1) Fetch base projects list (no filters; fixed allowlist of params)
         projects_url = f"{self.base_url}/projects"
@@ -56,14 +59,16 @@ class SupabaseDBClient:
         ]
 
         async with httpx.AsyncClient() as client:
-            proj_resp = await client.get(projects_url, headers=self.headers, params=proj_params, timeout=20.0)
+            proj_resp = await client.get(
+                projects_url, headers=self.headers, params=proj_params, timeout=20.0
+            )
             if proj_resp.status_code >= 400:
                 try:
                     proj_resp.raise_for_status()
                 except httpx.HTTPStatusError as ex:
                     ex.args = (*ex.args, f"Body: {proj_resp.text}")
                     raise
-            projects = proj_resp.json()
+            projects = proj_resp.json() or []
 
             # 2) Aggregate tasks_count
             tasks_url = f"{self.base_url}/work_item"
@@ -73,7 +78,9 @@ class SupabaseDBClient:
                 ("group", "project_id"),
             ]
 
-            tasks_resp = await client.get(tasks_url, headers=self.headers, params=task_params, timeout=20.0)
+            tasks_resp = await client.get(
+                tasks_url, headers=self.headers, params=task_params, timeout=20.0
+            )
             if tasks_resp.status_code >= 400:
                 try:
                     tasks_resp.raise_for_status()
@@ -81,7 +88,11 @@ class SupabaseDBClient:
                     ex.args = (*ex.args, f"Body: {tasks_resp.text}")
                     raise
             task_rows = tasks_resp.json() or []
-            tasks_map = {row["project_id"]: row.get("count", 0) for row in task_rows if isinstance(row, dict) and "project_id" in row}
+            tasks_map = {
+                row["project_id"]: row.get("count", 0)
+                for row in task_rows
+                if isinstance(row, dict) and "project_id" in row
+            }
 
             # 3) Aggregate bugs_count
             bug_params: list[tuple[str, str]] = [
@@ -90,7 +101,9 @@ class SupabaseDBClient:
                 ("group", "project_id"),
             ]
 
-            bugs_resp = await client.get(tasks_url, headers=self.headers, params=bug_params, timeout=20.0)
+            bugs_resp = await client.get(
+                tasks_url, headers=self.headers, params=bug_params, timeout=20.0
+            )
             if bugs_resp.status_code >= 400:
                 try:
                     bugs_resp.raise_for_status()
@@ -98,7 +111,11 @@ class SupabaseDBClient:
                     ex.args = (*ex.args, f"Body: {bugs_resp.text}")
                     raise
             bug_rows = bugs_resp.json() or []
-            bugs_map = {row["project_id"]: row.get("count", 0) for row in bug_rows if isinstance(row, dict) and "project_id" in row}
+            bugs_map = {
+                row["project_id"]: row.get("count", 0)
+                for row in bug_rows
+                if isinstance(row, dict) and "project_id" in row
+            }
 
         # 4) Merge counts into projects
         for row in projects:
@@ -207,9 +224,11 @@ def _drop_all_query_params(req: Request) -> None:
     - This endpoint must ALWAYS return all projects and MUST NOT forward any client-provided
       filters to Supabase/PostgREST to avoid parse errors such as 'failed to parse filter (project_id)'.
     - We deliberately ignore req.query_params and never pass them to the DB layer.
+
+    SECURITY NOTE:
+    - This helper is a guardrail: do not read from req.query_params in this route.
     """
-    # No-op: we just purposely do not use req.query_params anywhere.
-    # If logging is desired in future, it can be added here to record unexpected params.
+    # Explicit noop: no read/forwarding of req.query_params
     _ = req  # satisfy linters; indicates intentional non-use
 
 
@@ -236,9 +255,10 @@ async def list_projects(
     PUBLIC_INTERFACE
     Get all projects with tasks_count and bugs_count aggregated from work_item by item_type.
 
-    Behavior:
+    Strict behavior:
     - Any provided query parameters (e.g., 'project_id', 'id', etc.) are ignored and dropped.
       The endpoint ALWAYS returns all projects without applying client-provided filters.
+    - No request arguments are passed into the database calls for listing.
 
     Returns:
     - List of Project objects, each including tasks_count and bugs_count.
