@@ -47,6 +47,10 @@ class SupabaseDBClient:
           - tasks_count = count of rows where project_id = project.id AND item_type = 'task'
           - bugs_count  = count of rows where project_id = project.id AND item_type = 'bug'
         Defaults to 0 if there are no matching work_item rows. Results are ordered by created_at desc.
+
+        PostgREST parameter rules followed:
+        - group, select, and filters are separate keys (never concatenated).
+        - Example (tasks): group=project_id, item_type=eq.task, select=project_id,count:id
         """
         projects_url = f"{self.base_url}/projects"
         work_item_url = f"{self.base_url}/work_item"
