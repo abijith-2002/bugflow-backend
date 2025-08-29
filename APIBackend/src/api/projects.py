@@ -25,14 +25,14 @@ def get_supabase(request_settings=Depends(get_settings)) -> SupabaseClient:
 
 async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     """
-    Fetch projects and compute counts from public.work_item.
+    Fetch projects and compute tasks/bugs counts from public.work_item using head=True counts.
 
     Implementation details:
-    - Retrieve all projects, then for each project perform a grouped aggregate
-      query via PostgREST selecting count:id grouped by item_type. This avoids
-      ambiguity with head=True handling in some supabase-py versions and makes
-      parsing explicit.
-    - Robust defaulting: if rows are missing or parsing fails, default to 0.
+    - Retrieve all projects (newest first).
+    - For each project, perform two separate count queries against public.work_item:
+      * tasks_count: select('id', count='exact', head=True).eq('project_id', <id>).eq('item_type','task')
+      * bugs_count:  select('id', count='exact', head=True).eq('project_id', <id>).eq('item_type','bug')
+    - Use resp.count and default to 0 if it is missing or None.
     """
     # 1) Fetch base projects (newest first)
     proj_resp = (
@@ -45,44 +45,39 @@ async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     if not projects:
         return []
 
-    # 2) For each project, run a grouped aggregate by item_type with count:id
+    # 2) For each project, run two head=True count queries
     for p in projects:
         pid = p.get("id")
+
+        # tasks_count
         tasks_count = 0
-        bugs_count = 0
         try:
-            # Use postgrest client to request counts explicitly grouped by item_type
-            # The "item_type,count:id" selection returns rows like:
-            #   [{ "item_type": "task", "count": 3 }, { "item_type": "bug", "count": 1 }]
-            # Note: group by via PostgREST is expressed by selecting columns; this relies
-            # on PostgREST inferring implicit grouping. For explicit control one can use
-            # rpc or a view; here we keep it simple and filter per project_id.
-            resp = (
-                supabase.postgrest.from_("work_item")
-                .select("item_type,count:id")
+            t_resp = (
+                supabase.table("work_item")
+                .select("id", count="exact", head=True)
                 .eq("project_id", pid)
+                .eq("item_type", "task")
                 .execute()
             )
-            rows = resp.data or []
-            # Some PostgREST setups may return numeric counts under key "count" or "count_id".
-            # Normalize both possibilities.
-            for r in rows:
-                itype = r.get("item_type")
-                cval = r.get("count")
-                if cval is None:
-                    # Fallback if backend returns alias as count_id
-                    cval = r.get("count_id")
-                try:
-                    ival = int(cval) if cval is not None else 0
-                except Exception:
-                    ival = 0
-                if itype == "task":
-                    tasks_count = ival
-                elif itype == "bug":
-                    bugs_count = ival
+            # supabase-py returns .count on the response for head=True
+            raw_t_count = getattr(t_resp, "count", None)
+            tasks_count = int(raw_t_count) if raw_t_count is not None else 0
         except Exception:
-            # Default to zeros on any failure
             tasks_count = 0
+
+        # bugs_count
+        bugs_count = 0
+        try:
+            b_resp = (
+                supabase.table("work_item")
+                .select("id", count="exact", head=True)
+                .eq("project_id", pid)
+                .eq("item_type", "bug")
+                .execute()
+            )
+            raw_b_count = getattr(b_resp, "count", None)
+            bugs_count = int(raw_b_count) if raw_b_count is not None else 0
+        except Exception:
             bugs_count = 0
 
         p["tasks_count"] = tasks_count
@@ -152,7 +147,7 @@ async def list_projects(
 ) -> List[Project]:
     """
     PUBLIC_INTERFACE
-    Return all projects with aggregated task and bug counts sourced from public.work_item.
+    Return all projects with task and bug counts sourced via head=True count queries on public.work_item.
     """
     try:
         _ignore_query_params(request)
