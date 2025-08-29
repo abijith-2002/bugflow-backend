@@ -187,8 +187,7 @@ async def create_project(
 
         resp = (
             supabase.table("projects")
-            .insert(insert_payload)
-            .select("*")
+            .insert(insert_payload, returning="representation")
             .single()
             .execute()
         )

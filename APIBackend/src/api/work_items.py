@@ -121,7 +121,14 @@ async def create_work_item(
         if payload.created_at:
             body["created_at"] = payload.created_at.isoformat()
 
-        resp = supabase.table("work_item").insert(body).select("*").single().execute()
+        # In supabase-py v2, insert() may return a builder without .select().
+        # Use PostgREST returning='representation' to fetch the inserted row directly.
+        resp = (
+            supabase.table("work_item")
+            .insert(body, returning="representation")
+            .single()
+            .execute()
+        )
         if not resp.data:
             raise HTTPException(status_code=502, detail="Supabase did not return inserted work item")
         return WorkItem(**resp.data)
