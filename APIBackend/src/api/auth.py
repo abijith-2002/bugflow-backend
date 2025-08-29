@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from supabase import Client as SupabaseClient
-from supabase.lib.auth.types import SignUpWithPasswordCredentials, SignInWithPasswordCredentials
+# Note: In supabase-py v2, credential helper classes are not needed; pass dicts to auth methods.
 
 from .config import get_settings
 from .supabase_client import SupabaseClientProvider
@@ -90,11 +90,12 @@ async def signup(payload: SignUpRequest, supabase: SupabaseClient = Depends(get_
     Register a new user using Supabase Auth via supabase-py.
     """
     try:
-        creds = SignUpWithPasswordCredentials(
-            email=str(payload.email),
-            password=payload.password,
-            options={"data": {"display_name": payload.username}},
-        )
+        # supabase-py v2 accepts a dict with email, password, and options
+        creds = {
+            "email": str(payload.email),
+            "password": payload.password,
+            "options": {"data": {"display_name": payload.username}},
+        }
         res = supabase.auth.sign_up(credentials=creds)
         # res contains user and session (session is None if email verification required)
         user_id = res.user.id if getattr(res, "user", None) else None
@@ -128,10 +129,11 @@ async def login(payload: LoginRequest, supabase: SupabaseClient = Depends(get_su
     Authenticate using supabase-py password grant and return token information.
     """
     try:
-        creds = SignInWithPasswordCredentials(
-            email=str(payload.email),
-            password=payload.password,
-        )
+        # supabase-py v2 accepts a dict with email and password
+        creds = {
+            "email": str(payload.email),
+            "password": payload.password,
+        }
         res = supabase.auth.sign_in_with_password(credentials=creds)
         # res.session contains access_token, refresh_token, expires_in; res.user contains id
         if not res or not res.session:
