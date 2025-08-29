@@ -48,20 +48,19 @@ async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     # 2) For each project, run two head=True count queries
     for p in projects:
         pid = p.get("id")
-        print(pid)
-
+     
         # tasks_count
         tasks_count = 0
         try:
             t_resp = (
                 supabase.table("work_item")
-                .select("id", count="exact", head=True)
+                .select("id", count="exact")
                 .eq("project_id", pid)
                 .eq("item_type", "task")
                 .execute()
             )
             # supabase-py returns .count on the response for head=True
-            print(t_resp)
+        
             raw_t_count = getattr(t_resp, "count", None)
          
             tasks_count = int(raw_t_count) if raw_t_count is not None else 0
@@ -73,7 +72,7 @@ async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
         try:
             b_resp = (
                 supabase.table("work_item")
-                .select("id", count="exact", head=True)
+                .select("id", count="exact")
                 .eq("project_id", pid)
                 .eq("item_type", "bug")
                 .execute()
