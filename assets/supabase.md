@@ -12,7 +12,10 @@ Key SDK usage:
   - supabase.auth.sign_in_with_password(SignInWithPasswordCredentials(...))
 - Database (PostgREST):
   - supabase.table("projects").select(...).order(...).execute()
-  - supabase.table("projects").insert(...).select("*").single().execute()
+  - Inserts (supabase-py v2):
+    resp = supabase.table("projects").insert(payload, returning="representation").execute()
+    data = resp.data or []
+    row = data[0] if isinstance(data, list) and data else data
   - supabase.table("work_item").select(...).eq(...).order(...).execute()
   - Grouped aggregations via the underlying client (supabase-py v2 does not expose .group(); use aggregate select):
     supabase.postgrest.from_("work_item").select("project_id,count:id").eq("item_type","task").execute()

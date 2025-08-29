@@ -188,12 +188,16 @@ async def create_project(
         resp = (
             supabase.table("projects")
             .insert(insert_payload, returning="representation")
-            .single()
             .execute()
         )
-        if not resp.data:
+        data = resp.data or []
+        # In supabase-py v2, .data is typically a list when using returning='representation'
+        if isinstance(data, list):
+            created = data[0] if data else None
+        else:
+            created = data  # fallback if SDK returns a dict
+        if not created:
             raise HTTPException(status_code=502, detail="Supabase did not return inserted project")
-        created = resp.data
         created.setdefault("tasks_count", 0)
         created.setdefault("bugs_count", 0)
         return Project(**created)

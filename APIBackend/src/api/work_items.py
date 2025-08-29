@@ -126,12 +126,17 @@ async def create_work_item(
         resp = (
             supabase.table("work_item")
             .insert(body, returning="representation")
-            .single()
             .execute()
         )
-        if not resp.data:
+        data = resp.data or []
+        # For supabase-py v2, returning='representation' usually yields a list
+        if isinstance(data, list):
+            created = data[0] if data else None
+        else:
+            created = data  # fallback if a dict is returned
+        if not created:
             raise HTTPException(status_code=502, detail="Supabase did not return inserted work item")
-        return WorkItem(**resp.data)
+        return WorkItem(**created)
     except HTTPException:
         raise
     except Exception as e:
