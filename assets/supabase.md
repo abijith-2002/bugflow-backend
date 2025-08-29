@@ -14,8 +14,8 @@ Key SDK usage:
   - supabase.table("projects").select(...).order(...).execute()
   - supabase.table("projects").insert(...).select("*").single().execute()
   - supabase.table("work_item").select(...).eq(...).order(...).execute()
-  - Grouped aggregations via the underlying client:
-    supabase.postgrest.from_("work_item").select("project_id,count:id").group("project_id").execute()
+  - Grouped aggregations via the underlying client (supabase-py v2 does not expose .group(); use aggregate select):
+    supabase.postgrest.from_("work_item").select("project_id,count:id").eq("item_type","task").execute()
 
 Signup does not accept a request-provided redirect URL. Configure redirect behavior in Supabase (Site URL and Redirect URLs in the Supabase Dashboard). The backend does not need a SITE_URL variable.
 

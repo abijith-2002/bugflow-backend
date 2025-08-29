@@ -38,13 +38,13 @@ async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     if not projects:
         return []
 
-    # Grouped counts using the underlying postgrest client
+    # Grouped counts using PostgREST aggregate select syntax (no .group() in supabase-py v2)
+    # The select "project_id,count:id" performs a count of id grouped by project_id when combined with eq filter.
     postgrest = supabase.postgrest
     tasks_rows = (
         postgrest.from_("work_item")
         .select("project_id,count:id", head=False)
         .eq("item_type", "task")
-        .group("project_id")
         .execute()
         .data
         or []
@@ -53,7 +53,6 @@ async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
         postgrest.from_("work_item")
         .select("project_id,count:id", head=False)
         .eq("item_type", "bug")
-        .group("project_id")
         .execute()
         .data
         or []
