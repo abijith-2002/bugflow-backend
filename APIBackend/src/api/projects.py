@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional, Dict
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel, Field, field_validator
@@ -25,14 +25,15 @@ def get_supabase(request_settings=Depends(get_settings)) -> SupabaseClient:
 
 async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     """
-    Fetch projects and merge independent task/bug counts from work_item grouped by project_id.
+    Fetch projects and, for each project, perform two independent head=True count
+    queries on public.work_item filtered by item_type to compute tasks_count
+    and bugs_count.
 
-    Rationale:
-    - We must avoid cross-type aggregation. tasks_count counts only item_type='task'
-      and bugs_count counts only item_type='bug'.
-    - supabase-py v2 relies on PostgREST aggregate syntax. We perform two filtered
-      aggregate queries and then map counts by project_id to avoid any accidental join
-      multiplicity or double-counting.
+    Refactoring note:
+    - As requested, this implementation uses supabase.table('work_item')
+      .select('id', count='exact', head=True) with filters for project_id and
+      item_type ('task' or 'bug'), then reads response.count.
+    - Robust defaulting: if response.count is missing or None, default to 0.
     """
     # 1) Fetch base projects (newest first)
     proj_resp = (
@@ -45,67 +46,43 @@ async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     if not projects:
         return []
 
-    # 2) Fetch independent counts with item_type filters
-    # Using PostgREST aggregate select "project_id,count:id" which returns one row
-    # per project_id. Filtering by item_type ensures counts are independent.
-    postgrest = supabase.postgrest
-
-    tasks_rows = (
-        postgrest.from_("work_item")
-        .select("project_id,count:id", head=False)
-        .eq("item_type", "task")
-        .execute()
-        .data
-        or []
-    )
-    bugs_rows = (
-        postgrest.from_("work_item")
-        .select("project_id,count:id", head=False)
-        .eq("item_type", "bug")
-        .execute()
-        .data
-        or []
-    )
-
-    def normalize_counts(rows) -> Dict[str, int]:
-        """
-        Normalize various possible PostgREST count field names into a simple dict
-        mapping project_id -> int count.
-
-        In some setups, aggregated count may appear as 'count', 'count:id',
-        'count_id' or similar; handle a few common variants defensively.
-        """
-        out: Dict[str, int] = {}
-        for r in rows:
-            pid = r.get("project_id")
-            # Common keys for PostgREST aggregate results:
-            raw = (
-                r.get("count")
-                or r.get("count:id")
-                or r.get("count_id")
-                or r.get("count_id()")
-            )
-            try:
-                out[str(pid)] = int(raw)
-            except Exception:
-                try:
-                    out[str(pid)] = int(float(raw)) if raw is not None else 0
-                except Exception:
-                    out[str(pid)] = 0
-        return out
-
-    tcounts = normalize_counts(tasks_rows)
-    bcounts = normalize_counts(bugs_rows)
-
-    # 3) Merge counts into project rows with defaults (0)
+    # 2) For each project, run two lightweight head=True count queries:
+    #    - tasks_count: item_type='task'
+    #    - bugs_count:  item_type='bug'
     for p in projects:
-        pid = str(p.get("id"))
-        p["tasks_count"] = tcounts.get(pid, 0)
-        p["bugs_count"] = bcounts.get(pid, 0)
+        pid = p.get("id")
+        tasks_count = 0
+        bugs_count = 0
+        try:
+            # Count tasks for this project
+            r_tasks = (
+                supabase.table("work_item")
+                .select("id", count="exact", head=True)
+                .eq("project_id", pid)
+                .eq("item_type", "task")
+                .execute()
+            )
+            # supabase-py v2 returns a response with .count populated on head=True
+            tasks_count = int(r_tasks.count) if getattr(r_tasks, "count", None) is not None else 0
+        except Exception:
+            tasks_count = 0  # Default on any SDK/transport error
 
-    # Developer verification note (example):
-    # If project P has: 1 task (item_type='task') and 1 bug (item_type='bug'),
-    # this function will set tasks_count=1 and bugs_count=1 for P, not 2.
+        try:
+            # Count bugs for this project
+            r_bugs = (
+                supabase.table("work_item")
+                .select("id", count="exact", head=True)
+                .eq("project_id", pid)
+                .eq("item_type", "bug")
+                .execute()
+            )
+            bugs_count = int(r_bugs.count) if getattr(r_bugs, "count", None) is not None else 0
+        except Exception:
+            bugs_count = 0  # Default on any SDK/transport error
+
+        p["tasks_count"] = tasks_count
+        p["bugs_count"] = bugs_count
+
     return projects
 
 

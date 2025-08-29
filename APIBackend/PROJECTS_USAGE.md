@@ -30,9 +30,10 @@ Supabase tables required:
   - other columns as per assets/sql/work_items_setup.sql
 
 Notes:
-- The /projects GET endpoint now returns tasks_count and bugs_count by aggregating the unified public.work_item table:
-  - tasks_count: count of rows with item_type='task' per project_id
-  - bugs_count: count of rows with item_type='bug' per project_id
+- The /projects GET endpoint returns tasks_count and bugs_count sourced via two head=True count queries against the unified public.work_item table (per project):
+  - tasks_count: supabase.table('work_item').select('id', count='exact', head=True).eq('project_id', <id>).eq('item_type','task').execute().count
+  - bugs_count: supabase.table('work_item').select('id', count='exact', head=True).eq('project_id', <id>).eq('item_type','bug').execute().count
+  - If the SDK response.count is missing or None, the backend defaults the count to 0.
 - You do NOT need separate tasks/bugs tables for counts anymore.
 - Ensure RLS policies on work_item allow SELECT for your use case (dev-permissive policies provided in assets/sql/work_items_setup.sql).
 
