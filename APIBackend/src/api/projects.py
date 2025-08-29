@@ -25,15 +25,14 @@ def get_supabase(request_settings=Depends(get_settings)) -> SupabaseClient:
 
 async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     """
-    Fetch projects and, for each project, perform two independent head=True count
-    queries on public.work_item filtered by item_type to compute tasks_count
-    and bugs_count.
+    Fetch projects and compute counts from public.work_item.
 
-    Refactoring note:
-    - As requested, this implementation uses supabase.table('work_item')
-      .select('id', count='exact', head=True) with filters for project_id and
-      item_type ('task' or 'bug'), then reads response.count.
-    - Robust defaulting: if response.count is missing or None, default to 0.
+    Implementation details:
+    - Retrieve all projects, then for each project perform a grouped aggregate
+      query via PostgREST selecting count:id grouped by item_type. This avoids
+      ambiguity with head=True handling in some supabase-py versions and makes
+      parsing explicit.
+    - Robust defaulting: if rows are missing or parsing fails, default to 0.
     """
     # 1) Fetch base projects (newest first)
     proj_resp = (
@@ -46,39 +45,45 @@ async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     if not projects:
         return []
 
-    # 2) For each project, run two lightweight head=True count queries:
-    #    - tasks_count: item_type='task'
-    #    - bugs_count:  item_type='bug'
+    # 2) For each project, run a grouped aggregate by item_type with count:id
     for p in projects:
         pid = p.get("id")
         tasks_count = 0
         bugs_count = 0
         try:
-            # Count tasks for this project
-            r_tasks = (
-                supabase.table("work_item")
-                .select("id", count="exact", head=True)
+            # Use postgrest client to request counts explicitly grouped by item_type
+            # The "item_type,count:id" selection returns rows like:
+            #   [{ "item_type": "task", "count": 3 }, { "item_type": "bug", "count": 1 }]
+            # Note: group by via PostgREST is expressed by selecting columns; this relies
+            # on PostgREST inferring implicit grouping. For explicit control one can use
+            # rpc or a view; here we keep it simple and filter per project_id.
+            resp = (
+                supabase.postgrest.from_("work_item")
+                .select("item_type,count:id")
                 .eq("project_id", pid)
-                .eq("item_type", "task")
                 .execute()
             )
-            # supabase-py v2 returns a response with .count populated on head=True
-            tasks_count = int(r_tasks.count) if getattr(r_tasks, "count", None) is not None else 0
+            rows = resp.data or []
+            # Some PostgREST setups may return numeric counts under key "count" or "count_id".
+            # Normalize both possibilities.
+            for r in rows:
+                itype = r.get("item_type")
+                cval = r.get("count")
+                if cval is None:
+                    # Fallback if backend returns alias as count_id
+                    cval = r.get("count_id")
+                try:
+                    ival = int(cval) if cval is not None else 0
+                except Exception:
+                    ival = 0
+                if itype == "task":
+                    tasks_count = ival
+                elif itype == "bug":
+                    bugs_count = ival
         except Exception:
-            tasks_count = 0  # Default on any SDK/transport error
-
-        try:
-            # Count bugs for this project
-            r_bugs = (
-                supabase.table("work_item")
-                .select("id", count="exact", head=True)
-                .eq("project_id", pid)
-                .eq("item_type", "bug")
-                .execute()
-            )
-            bugs_count = int(r_bugs.count) if getattr(r_bugs, "count", None) is not None else 0
-        except Exception:
-            bugs_count = 0  # Default on any SDK/transport error
+            # Default to zeros on any failure
+            tasks_count = 0
+            bugs_count = 0
 
         p["tasks_count"] = tasks_count
         p["bugs_count"] = bugs_count
