@@ -17,10 +17,10 @@ Key SDK usage:
     data = resp.data or []
     row = data[0] if isinstance(data, list) and data else data
   - supabase.table("work_item").select(...).eq(...).order(...).execute()
-  - Counts via head=True and response.count (used by /projects for tasks_count and bugs_count):
-    supabase.table("work_item").select("id", count="exact", head=True).eq("project_id", "<uuid>").eq("item_type", "task").execute().count
-    supabase.table("work_item").select("id", count="exact", head=True).eq("project_id", "<uuid>").eq("item_type", "bug").execute().count
-    Note: The backend defaults to 0 if response.count is missing or None.
+  - Counts via aggregate select (recommended with supabase-py v2) used by /projects:
+    supabase.table("work_item").select("count:id").eq("project_id", "<uuid>").eq("item_type", "task").execute()
+    supabase.table("work_item").select("count:id").eq("project_id", "<uuid>").eq("item_type", "bug").execute()
+    Then parse resp.data[0]["count"] (coerced to int). The backend defaults to 0 if the response is missing/malformed.
 
 Signup does not accept a request-provided redirect URL. Configure redirect behavior in Supabase (Site URL and Redirect URLs in the Supabase Dashboard). The backend does not need a SITE_URL variable.
 
