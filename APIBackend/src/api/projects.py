@@ -25,9 +25,16 @@ def get_supabase(request_settings=Depends(get_settings)) -> SupabaseClient:
 
 async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     """
-    Fetch projects and merge task/bug counts from work_item grouped by project_id.
+    Fetch projects and merge independent task/bug counts from work_item grouped by project_id.
+
+    Rationale:
+    - We must avoid cross-type aggregation. tasks_count counts only item_type='task'
+      and bugs_count counts only item_type='bug'.
+    - supabase-py v2 relies on PostgREST aggregate syntax. We perform two filtered
+      aggregate queries and then map counts by project_id to avoid any accidental join
+      multiplicity or double-counting.
     """
-    # Get projects (newest first)
+    # 1) Fetch base projects (newest first)
     proj_resp = (
         supabase.table("projects")
         .select("id,name,project_key,description,colour,created_at")
@@ -38,15 +45,15 @@ async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     if not projects:
         return []
 
-    # Grouped counts using PostgREST aggregate select syntax (no .group() in supabase-py v2)
-    # The select "project_id,count:id" performs a count of id grouped by project_id when combined with eq filter.
+    # 2) Fetch independent counts with item_type filters
+    # Using PostgREST aggregate select "project_id,count:id" which returns one row
+    # per project_id. Filtering by item_type ensures counts are independent.
     postgrest = supabase.postgrest
-    # Intent: tasks_count must include only records where item_type='task'.
-    # We rely on PostgREST aggregate select to count ids grouped by project_id and filter by the item_type.
+
     tasks_rows = (
         postgrest.from_("work_item")
         .select("project_id,count:id", head=False)
-        .eq("item_type", "task")  # filter ensures only 'task' items are counted
+        .eq("item_type", "task")
         .execute()
         .data
         or []
@@ -61,10 +68,23 @@ async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     )
 
     def normalize_counts(rows) -> Dict[str, int]:
+        """
+        Normalize various possible PostgREST count field names into a simple dict
+        mapping project_id -> int count.
+
+        In some setups, aggregated count may appear as 'count', 'count:id',
+        'count_id' or similar; handle a few common variants defensively.
+        """
         out: Dict[str, int] = {}
         for r in rows:
             pid = r.get("project_id")
-            raw = r.get("count") or r.get("count_id") or r.get("count_id()")
+            # Common keys for PostgREST aggregate results:
+            raw = (
+                r.get("count")
+                or r.get("count:id")
+                or r.get("count_id")
+                or r.get("count_id()")
+            )
             try:
                 out[str(pid)] = int(raw)
             except Exception:
@@ -77,10 +97,15 @@ async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
     tcounts = normalize_counts(tasks_rows)
     bcounts = normalize_counts(bugs_rows)
 
+    # 3) Merge counts into project rows with defaults (0)
     for p in projects:
         pid = str(p.get("id"))
         p["tasks_count"] = tcounts.get(pid, 0)
         p["bugs_count"] = bcounts.get(pid, 0)
+
+    # Developer verification note (example):
+    # If project P has: 1 task (item_type='task') and 1 bug (item_type='bug'),
+    # this function will set tasks_count=1 and bugs_count=1 for P, not 2.
     return projects
 
 
