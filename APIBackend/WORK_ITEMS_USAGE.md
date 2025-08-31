@@ -35,6 +35,16 @@ POST /work-items
   }
 - Response 201: Created work item, including numeric id and item_key like KAI-1.
 
+PATCH /work-items/{project_id}/{id}/status
+- Body:
+  {
+    "status": "in_progress | done | blocked | open | <custom>"
+  }
+- Response 200: Updated work item.
+- Notes:
+  - Validation: status must be a non-empty string up to 40 chars.
+  - Not found (404) if the (project_id, id) pair does not match a row.
+
 Notes:
 - The incremental id is per project and increases regardless of item_type.
 - item_key is generated from the project's project_key and the numeric id.

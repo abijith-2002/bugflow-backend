@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Path
 from pydantic import BaseModel, Field, field_validator
 from supabase import Client as SupabaseClient
 
@@ -53,6 +53,18 @@ class CreateWorkItemRequest(BaseModel):
         if not v.strip():
             raise ValueError("title cannot be blank")
         return v
+
+
+class UpdateWorkItemStatusRequest(BaseModel):
+    """Request payload to update the status of a work item."""
+    status: str = Field(..., min_length=1, max_length=40, description="New workflow status")
+
+    @field_validator("status")
+    @classmethod
+    def status_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("status cannot be blank")
+        return v.strip()
 
 
 # PUBLIC_INTERFACE
@@ -140,4 +152,58 @@ async def create_work_item(
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# PUBLIC_INTERFACE
+@router.patch(
+    "/{project_id}/{id}/status",
+    response_model=WorkItem,
+    status_code=status.HTTP_200_OK,
+    summary="Update work item status",
+    description="Update the status field of a work item identified by project_id and id. Returns the updated work item.",
+    responses={
+        200: {"description": "Work item status updated"},
+        400: {"description": "Validation or Supabase error"},
+        404: {"description": "Work item not found"},
+        500: {"description": "Unexpected server error"},
+    },
+)
+async def update_work_item_status(
+    project_id: str = Path(..., description="UUID of the project"),
+    id: int = Path(..., description="Numeric item id within the project"),
+    payload: UpdateWorkItemStatusRequest = ...,
+    supabase: SupabaseClient = Depends(get_supabase),
+) -> WorkItem:
+    """
+    PUBLIC_INTERFACE
+    Update the status of a work item.
+
+    Parameters:
+    - project_id: UUID of the project the item belongs to.
+    - id: Incremental numeric id of the item within the project.
+    - payload.status: New status value.
+
+    Returns:
+    - The updated WorkItem.
+    """
+    try:
+        # Perform update with returning representation to fetch the updated row.
+        resp = (
+            supabase.table("work_item")
+            .update({"status": payload.status}, returning="representation")
+            .eq("project_id", project_id)
+            .eq("id", id)
+            .execute()
+        )
+        data = resp.data or []
+        updated = data[0] if isinstance(data, list) and data else (data if data else None)
+        if not updated:
+            # No rows matched the filters
+            raise HTTPException(status_code=404, detail="Work item not found")
+        return WorkItem(**updated)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Map SDK or constraint errors to 400 by default
         raise HTTPException(status_code=400, detail=str(e))
