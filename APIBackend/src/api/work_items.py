@@ -179,10 +179,20 @@ async def update_work_item_status(
     PUBLIC_INTERFACE
     Update the status of a work item.
 
+    Route:
+    - PATCH /work-items/{project_id}/{id}/status
+
     Parameters:
     - project_id: UUID of the project the item belongs to.
     - id: Incremental numeric id of the item within the project.
     - payload.status: New status value.
+
+    Behavior:
+    - Executes an update with returning='representation'. Some Supabase configurations may
+      return an empty 'data' array even when a row was updated (but 'count' gets populated).
+      To avoid false 404s, if data is empty and count > 0, we perform a follow-up select to
+      fetch the updated row.
+    - Returns 404 only when both 'data' is empty and 'count' is 0 or None.
 
     Returns:
     - The updated WorkItem.
@@ -196,11 +206,30 @@ async def update_work_item_status(
             .eq("id", id)
             .execute()
         )
+
         data = resp.data or []
         updated = data[0] if isinstance(data, list) and data else (data if data else None)
+
+        if not updated:
+            # Some SDK responses may not include representation; check count as a fallback
+            affected = getattr(resp, "count", None)
+            if isinstance(affected, int) and affected > 0:
+                # Follow-up read to fetch the updated item
+                fetch = (
+                    supabase.table("work_item")
+                    .select("*")
+                    .eq("project_id", project_id)
+                    .eq("id", id)
+                    .limit(1)
+                    .execute()
+                )
+                fetch_data = fetch.data or []
+                updated = fetch_data[0] if isinstance(fetch_data, list) and fetch_data else None
+
         if not updated:
             # No rows matched the filters
             raise HTTPException(status_code=404, detail="Work item not found")
+
         return WorkItem(**updated)
     except HTTPException:
         raise
