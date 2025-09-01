@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status, Path, Response
 from pydantic import BaseModel, Field, field_validator
@@ -64,6 +64,35 @@ class UpdateWorkItemStatusRequest(BaseModel):
     def status_not_blank(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("status cannot be blank")
+        return v.strip()
+
+
+class PatchWorkItemRequest(BaseModel):
+    """
+    Request payload to partially update a work item.
+    Fields are optional; only provided fields will be updated.
+    """
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200, description="New title")
+    description: Optional[Optional[str]] = Field(default=None, description="New description (string or null)")
+    status: Optional[str] = Field(default=None, min_length=1, max_length=40, description="New status")
+    priority: Optional[Optional[str]] = Field(default=None, description="New priority label (string or null)")
+
+    @field_validator("title")
+    @classmethod
+    def title_if_provided_not_blank(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if not v.strip():
+            raise ValueError("title cannot be blank if provided")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def status_if_provided_not_blank(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if not v.strip():
+            raise ValueError("status cannot be blank if provided")
         return v.strip()
 
 
@@ -149,6 +178,89 @@ async def create_work_item(
         if not created:
             raise HTTPException(status_code=502, detail="Supabase did not return inserted work item")
         return WorkItem(**created)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# PUBLIC_INTERFACE
+@router.patch(
+    "/{project_id}/{id}",
+    response_model=WorkItem,
+    status_code=status.HTTP_200_OK,
+    summary="Partially update a work item",
+    description="Update one or more fields (title, description, status, priority) of a work item identified by project_id and id. Returns the updated work item.",
+    responses={
+        200: {"description": "Work item updated"},
+        400: {"description": "Validation or Supabase error"},
+        404: {"description": "Work item not found"},
+        500: {"description": "Unexpected server error"},
+    },
+)
+async def patch_work_item(
+    project_id: str = Path(..., description="UUID of the project"),
+    id: int = Path(..., description="Numeric item id within the project"),
+    payload: PatchWorkItemRequest = ...,
+    supabase: SupabaseClient = Depends(get_supabase),
+) -> WorkItem:
+    """
+    PUBLIC_INTERFACE
+    Partially update a work item.
+
+    Route:
+    - PATCH /work-items/{project_id}/{id}
+
+    Behavior:
+    - Builds an update body with only provided fields.
+    - If no fields are provided, returns 400.
+    - Uses returning='representation' to fetch updated row; falls back to a follow-up select if needed.
+    """
+    try:
+        update_body: Dict[str, Any] = {}
+
+        if payload.title is not None:
+            update_body["title"] = payload.title
+        if payload.description is not None:
+            # allow explicit null to clear the description
+            update_body["description"] = payload.description
+        if payload.status is not None:
+            update_body["status"] = payload.status
+        if payload.priority is not None:
+            update_body["priority"] = payload.priority
+
+        if not update_body:
+            raise HTTPException(status_code=400, detail="No fields provided to update")
+
+        resp = (
+            supabase.table("work_item")
+            .update(update_body, returning="representation")
+            .eq("project_id", project_id)
+            .eq("id", id)
+            .execute()
+        )
+
+        data = resp.data or []
+        updated = data[0] if isinstance(data, list) and data else (data if data else None)
+
+        if not updated:
+            affected = getattr(resp, "count", None)
+            if isinstance(affected, int) and affected > 0:
+                fetch = (
+                    supabase.table("work_item")
+                    .select("*")
+                    .eq("project_id", project_id)
+                    .eq("id", id)
+                    .limit(1)
+                    .execute()
+                )
+                fetch_data = fetch.data or []
+                updated = fetch_data[0] if isinstance(fetch_data, list) and fetch_data else None
+
+        if not updated:
+            raise HTTPException(status_code=404, detail="Work item not found")
+
+        return WorkItem(**updated)
     except HTTPException:
         raise
     except Exception as e:
