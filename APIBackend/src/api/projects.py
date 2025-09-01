@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Path, Response
 from pydantic import BaseModel, Field, field_validator
 from supabase import Client as SupabaseClient
 
@@ -208,6 +208,64 @@ async def create_project(
         created.setdefault("tasks_count", 0)
         created.setdefault("bugs_count", 0)
         return Project(**created)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# PUBLIC_INTERFACE
+@router.delete(
+    "/{id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a project",
+    description=(
+        "Delete a project by UUID. Returns 204 on successful deletion, "
+        "404 if the project does not exist."
+    ),
+    responses={
+        204: {"description": "Project deleted"},
+        404: {"description": "Project not found"},
+        400: {"description": "Validation or Supabase error"},
+        500: {"description": "Unexpected server error"},
+    },
+)
+async def delete_project(
+    id: str = Path(..., description="Project UUID"),
+    supabase: SupabaseClient = Depends(get_supabase),
+) -> Response:
+    """
+    PUBLIC_INTERFACE
+    Delete a project and return 204 No Content on success.
+
+    Behavior:
+    - Executes a delete on public.projects filtered by id.
+    - Determines if any row was deleted by checking response.data length or response.count, if available.
+    - Returns 404 if no rows were affected.
+
+    Notes:
+    - Related work items are expected to be deleted by ON DELETE CASCADE on foreign keys.
+    """
+    try:
+        resp = (
+            supabase.table("projects")
+            .delete()
+            .eq("id", id)
+            .execute()
+        )
+
+        deleted_rows = 0
+        if isinstance(resp.data, list):
+            deleted_rows = len(resp.data)
+        elif resp.data:
+            deleted_rows = 1
+
+        if deleted_rows == 0:
+            affected = getattr(resp, "count", None)
+            if not (isinstance(affected, int) and affected > 0):
+                raise HTTPException(status_code=404, detail="Project not found")
+
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except HTTPException:
         raise
     except Exception as e:
