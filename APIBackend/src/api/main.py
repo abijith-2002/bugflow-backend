@@ -20,6 +20,7 @@ except Exception:
 from .auth import router as auth_router
 from .projects import router as projects_router
 from .work_items import router as work_items_router
+from .comments import router as comments_router
 
 app = FastAPI(
     title="BugFlow API",
@@ -28,6 +29,7 @@ app = FastAPI(
     openapi_tags=[
         {"name": "Health", "description": "Service health and diagnostics"},
         {"name": "Authentication", "description": "User sign-up and login endpoints via Supabase"},
+        {"name": "Comments", "description": "Work item comments management"},
     ],
 )
 
@@ -50,3 +52,4 @@ def health_check():
 app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(work_items_router)
+app.include_router(comments_router)

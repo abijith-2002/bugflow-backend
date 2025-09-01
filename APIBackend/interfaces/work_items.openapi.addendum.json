@@ -1,6 +1,18 @@
 {
   "note": "This addendum documents the new /work-items endpoints. Re-generate the main openapi.json via src/api/generate_openapi.py for a fully synchronized spec.",
   "paths": {
+    "/work-items/{project_id}/{id}/comments": {
+      "get": {
+        "tags": ["Comments"],
+        "summary": "List comments for a work item",
+        "description": "List all comments for a specific work item identified by project_id and id."
+      },
+      "post": {
+        "tags": ["Comments"],
+        "summary": "Add a comment to a work item",
+        "description": "Create a new comment for a specific work item."
+      }
+    },
     "/work-items": {
       "get": {
         "tags": ["Work Items"],
