@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status, Header
 from pydantic import BaseModel, Field, field_validator
 from supabase import Client as SupabaseClient
 
@@ -29,13 +29,19 @@ class Comment(BaseModel):
     id: int = Field(..., description="Auto-increment comment id per (project_id, item_id)")
     body: str = Field(..., description="Comment text content")
     author_id: Optional[str] = Field(default=None, description="Optional Supabase user id of the commenter")
+    # Optional display name resolved at creation time; may not exist on old rows.
+    author_display_name: Optional[str] = Field(
+        default=None,
+        description="Author's display name at the time of commenting (resolved from user profile)"
+    )
     created_at: datetime = Field(..., description="Timestamp when the comment was created")
 
 
 class CreateCommentRequest(BaseModel):
     """Payload to create a new comment on a given work item."""
     body: str = Field(..., min_length=1, max_length=5000, description="Comment text content")
-    author_id: Optional[str] = Field(default=None, description="Optional Supabase user id of the commenter")
+    # Note: author_id is intentionally NOT accepted from the client for integrity.
+    # It will be derived from the authenticated user context (Authorization header / Supabase session).
 
     @field_validator("body")
     @classmethod
@@ -43,6 +49,67 @@ class CreateCommentRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError("Comment body cannot be blank")
         return v.strip()
+
+
+async def _resolve_user_from_bearer_token(
+    supabase: SupabaseClient,
+    authorization: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Resolve (user_id, display_name) from the provided Authorization: Bearer <jwt> header.
+
+    Strategy:
+    - If token is present, call supabase.auth.get_user(token=...) to retrieve the user.
+    - Prefer display name from user.user_metadata.display_name.
+    - If not present, attempt to read 'users' public table with id = auth.user.id (best-effort).
+    - Fallbacks:
+        * display_name: 'Anonymous' if missing
+        * user_id: None if cannot be determined
+    """
+    try:
+        if not authorization:
+            return None, "Anonymous"
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip():
+            token = parts[1].strip()
+        else:
+            # Malformed header; treat as anonymous
+            return None, "Anonymous"
+
+        # Get user info from Supabase Auth
+        user_res = supabase.auth.get_user(token=token)
+        user = getattr(user_res, "user", None)
+        user_id = getattr(user, "id", None)
+
+        display_name: Optional[str] = None
+        # Try user_metadata
+        if user and getattr(user, "user_metadata", None):
+            meta = user.user_metadata or {}
+            display_name = meta.get("display_name") or meta.get("full_name") or meta.get("name")
+
+        # Best-effort lookup in a public 'users' table if present
+        if (not display_name) and user_id:
+            try:
+                urow = (
+                    supabase.table("users")
+                    .select("display_name")
+                    .eq("id", user_id)
+                    .limit(1)
+                    .execute()
+                )
+                if urow.data:
+                    display_name = (urow.data[0] or {}).get("display_name")
+            except Exception:
+                # Ignore if table not found / RLS; just fallback
+                pass
+
+        if not display_name:
+            display_name = str(user_id) if user_id else "Anonymous"
+
+        return (str(user_id) if user_id else None), display_name
+    except Exception:
+        # On any failure, degrade gracefully
+        return None, "Anonymous"
 
 
 # PUBLIC_INTERFACE
@@ -89,7 +156,7 @@ async def list_comments(
     response_model=Comment,
     status_code=status.HTTP_201_CREATED,
     summary="Add a comment to a work item",
-    description="Create a new comment for a given work item. Returns the created comment.",
+    description="Create a new comment for a given work item. The author is derived from the authenticated user; the author's display name is resolved server-side.",
     responses={
         201: {"description": "Comment created"},
         400: {"description": "Validation or Supabase error"},
@@ -102,15 +169,20 @@ async def add_comment(
     id: int = Path(..., description="Numeric item id within the project"),
     payload: CreateCommentRequest = ...,
     supabase: SupabaseClient = Depends(get_supabase),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> Comment:
     """
     PUBLIC_INTERFACE
     Add a comment to an existing work item.
 
     Behavior:
-    - Optionally verifies the work item exists before inserting a comment.
-    - Inserts into public.work_item_comment with (project_id, item_id, body, author_id).
+    - Verifies the work item exists before inserting a comment (best-effort).
+    - Determines the current user based on Authorization: Bearer <token>.
+    - Fetches user's display name from Supabase user profile (user_metadata) or users table if present.
+    - Inserts into public.work_item_comment with (project_id, item_id, body, author_id, author_display_name).
     - Returns the inserted comment row.
+
+    If user info is missing or not resolvable, falls back to (author_id=None, author_display_name='Anonymous').
     """
     try:
         # Verify the work item exists (best-effort)
@@ -128,17 +200,26 @@ async def add_comment(
         except HTTPException:
             raise
         except Exception:
-            # If select fails due to RLS or transient issues, we proceed and let FK constraints handle it.
+            # If select fails due to RLS or transient issues, proceed and let FK constraints handle it.
             pass
+
+        # Resolve current user and display name from Supabase
+        author_id, display_name = await _resolve_user_from_bearer_token(
+            supabase=supabase,
+            authorization=authorization,
+        )
 
         insert_body = {
             "project_id": project_id,
             "item_id": id,
             "body": payload.body,
+            # Store both identifiers when possible
+            "author_display_name": display_name,
         }
-        if payload.author_id:
-            insert_body["author_id"] = payload.author_id
+        if author_id:
+            insert_body["author_id"] = author_id
 
+        # Insert comment
         resp = (
             supabase.table("work_item_comment")
             .insert(insert_body, returning="representation")
