@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status, Path
+from fastapi import APIRouter, Depends, HTTPException, status, Path, Response
 from pydantic import BaseModel, Field, field_validator
 from supabase import Client as SupabaseClient
 
@@ -235,4 +235,61 @@ async def update_work_item_status(
         raise
     except Exception as e:
         # Map SDK or constraint errors to 400 by default
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# PUBLIC_INTERFACE
+@router.delete(
+    "/{project_id}/{id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a work item",
+    description="Delete a work item identified by project_id and id. Returns 204 on success, 404 if not found.",
+    responses={
+        204: {"description": "Work item deleted"},
+        404: {"description": "Work item not found"},
+        400: {"description": "Validation or Supabase error"},
+        500: {"description": "Unexpected server error"},
+    },
+)
+async def delete_work_item(
+    project_id: str = Path(..., description="UUID of the project"),
+    id: int = Path(..., description="Numeric item id within the project"),
+    supabase: SupabaseClient = Depends(get_supabase),
+) -> Response:
+    """
+    PUBLIC_INTERFACE
+    Delete a work item by composite key (project_id, id).
+
+    Behavior:
+    - Executes a delete with filters on project_id and id.
+    - If the SDK response data is empty, uses resp.count (if available) to infer affected rows.
+    - Returns 404 when no rows were affected; 204 No Content on successful deletion.
+    """
+    try:
+        resp = (
+            supabase.table("work_item")
+            .delete()
+            .eq("project_id", project_id)
+            .eq("id", id)
+            .execute()
+        )
+
+        # Determine if any row was deleted
+        deleted_rows = 0
+        if isinstance(resp.data, list):
+            deleted_rows = len(resp.data)
+        elif resp.data:
+            deleted_rows = 1  # in case a dict is returned
+
+        if deleted_rows == 0:
+            affected = getattr(resp, "count", None)
+            if not (isinstance(affected, int) and affected > 0):
+                # Not found
+                raise HTTPException(status_code=404, detail="Work item not found")
+
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Surface as 400 for client/Supabase errors by default
         raise HTTPException(status_code=400, detail=str(e))
