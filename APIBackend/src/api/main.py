@@ -21,6 +21,7 @@ from .auth import router as auth_router
 from .projects import router as projects_router
 from .work_items import router as work_items_router
 from .comments import router as comments_router
+from .user_profile import router as user_profile_router
 
 app = FastAPI(
     title="BugFlow API",
@@ -53,3 +54,4 @@ app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(work_items_router)
 app.include_router(comments_router)
+app.include_router(user_profile_router)

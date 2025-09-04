@@ -25,4 +25,5 @@ Database/Auth SDK
 Notes
 - See SUPABASE_SETUP.md for dashboard configuration.
 - See AUTH_USAGE.md for endpoint usage and troubleshooting tips.
+- New endpoint: GET /users/me to fetch current user's display_name from public.profiles.
 - See PROJECTS_USAGE.md for projects table and endpoints (/projects GET, POST).

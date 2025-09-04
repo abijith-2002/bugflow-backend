@@ -19,7 +19,8 @@ This backend uses the official supabase-py SDK for authentication and database o
      1. assets/sql/projects_setup.sql
      2. assets/sql/work_items_setup.sql
      3. assets/sql/work_item_comments_setup.sql
-     4. (Optional) assets/sql/tasks_bugs_setup.sql
+     4. assets/sql/profiles_setup.sql   <-- required for display_name near avatar
+     5. (Optional) assets/sql/tasks_bugs_setup.sql
    - Note: The automation RPC (public.run_sql) is not installed in your project (PGRST202), so run scripts manually via the dashboard.
 
 4) Endpoints
