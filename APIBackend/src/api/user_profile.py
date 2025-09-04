@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Header, status
 from pydantic import BaseModel, Field
@@ -124,3 +124,64 @@ async def get_me(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+class GetDisplayNameRequest(BaseModel):
+    """Request model for POST /users/me to lookup a specific user's display_name by id."""
+    user_id: str = Field(..., description="Supabase user id (UUID) to look up in public.profiles")
+
+# PUBLIC_INTERFACE
+@router.post(
+    "/me",
+    status_code=status.HTTP_200_OK,
+    summary="Get user's display name by user id",
+    description="Accepts a Supabase user_id from the client and returns display_name from public.profiles where id = user_id. Returns [{'display_name':'Anonymous'}] if not found.",
+    responses={
+        200: {"description": "Resolved user's display name"},
+        400: {"description": "Validation or Supabase error"},
+        500: {"description": "Unexpected server error"},
+    },
+)
+async def get_display_name_by_id(
+    payload: GetDisplayNameRequest,
+    supabase: SupabaseClient = Depends(get_supabase),
+) -> List[dict]:
+    """
+    PUBLIC_INTERFACE
+    POST /users/me
+
+    Purpose:
+    - Mirror a direct SQL select display_name from public.profiles where id = :user_id
+      and return an array of objects like: [{"display_name":"<name>"}].
+
+    Behavior:
+    - If a matching row is found, return [{"display_name": "<value>"}].
+    - If not found or display_name is null/blank, return [{"display_name": "Anonymous"}].
+    """
+    try:
+        user_id = payload.user_id.strip()
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id must be a non-empty string")
+
+        resp = (
+            supabase.table("profiles")
+            .select("display_name")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        name = None
+        if resp and isinstance(resp.data, list) and resp.data:
+            candidate = (resp.data[0] or {}).get("display_name")
+            if isinstance(candidate, str) and candidate.strip():
+                name = candidate.strip()
+
+        if not name:
+            name = "Anonymous"
+
+        # Return as array of objects like SQL: [{"display_name": "name"}]
+        return [{"display_name": name}]
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Map general Supabase or runtime errors to 400 by default
+        raise HTTPException(status_code=400, detail=str(e))
