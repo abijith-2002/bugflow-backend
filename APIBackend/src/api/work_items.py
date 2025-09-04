@@ -34,6 +34,8 @@ class WorkItem(BaseModel):
     description: Optional[str] = Field(default=None, description="Detailed description")
     status: str = Field(default="open", description="Workflow status")
     priority: Optional[str] = Field(default=None, description="Priority label")
+    # Optional creator field stored in DB as 'creator'
+    creator: Optional[str] = Field(default=None, description="Display name of the user who created this item")
     created_at: datetime = Field(..., description="Creation timestamp")
 
 
@@ -45,6 +47,8 @@ class CreateWorkItemRequest(BaseModel):
     description: Optional[str] = Field(default=None, description="Description of the work item")
     status: Optional[str] = Field(default=None, description="Initial status (default 'open')")
     priority: Optional[str] = Field(default=None, description="Priority label (e.g., low, medium, high)")
+    # New optional field coming from client to store in DB column 'creator'
+    created_by: Optional[str] = Field(default=None, description="Creator display name to store in 'creator' column")
     created_at: Optional[datetime] = Field(default=None, description="Creation time; if omitted, database default is used")
 
     @field_validator("title")
@@ -159,6 +163,9 @@ async def create_work_item(
             body["status"] = payload.status
         if payload.priority:
             body["priority"] = payload.priority
+        # Map created_by -> creator column if provided
+        if isinstance(payload.created_by, str) and payload.created_by.strip():
+            body["creator"] = payload.created_by.strip()
         if payload.created_at:
             body["created_at"] = payload.created_at.isoformat()
 
