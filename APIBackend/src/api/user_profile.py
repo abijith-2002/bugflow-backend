@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Header, status
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
@@ -25,56 +25,102 @@ class CurrentUserProfileResponse(BaseModel):
     display_name: Optional[str] = Field(default=None, description="Display name from public.profiles.display_name")
     source: str = Field(..., description="Where the display name was obtained from (profiles|metadata|fallback)")
 
-class GetDisplayNameRequest(BaseModel):
-    """Request model containing the user id to look up in public.profiles."""
-    user_id: str = Field(..., description="Supabase user id (UUID) to look up in public.profiles")
+async def _resolve_current_user(
+    supabase: SupabaseClient,
+    authorization: Optional[str],
+) -> Optional[str]:
+    """
+    Resolve current user id from Authorization: Bearer <jwt>.
+    Returns the user id string or None if not resolvable.
+    """
+    if not authorization:
+        return None
+    parts = authorization.split()
+    if not (len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip()):
+        return None
+    token = parts[1].strip()
+    try:
+        user_res = supabase.auth.get_user(token=token)
+        user = getattr(user_res, "user", None)
+        return getattr(user, "id", None)
+    except Exception:
+        return None
 
 # PUBLIC_INTERFACE
-@router.post(
+@router.get(
     "/me",
+    response_model=CurrentUserProfileResponse,
     status_code=status.HTTP_200_OK,
-    summary="Get user's display name by user id",
-    description="Accepts a Supabase user_id from the client and returns display_name from public.profiles where id = user_id. Returns {'display_name': 'Anonymous'} if not found.",
+    summary="Get current user's display name",
+    description=(
+        "Fetch display_name from public.profiles for the authenticated user (id = auth user id). "
+        "Falls back to user_metadata fields or Anonymous if not found."
+    ),
     responses={
-        200: {"description": "Resolved user's display name"},
-        400: {"description": "Validation or Supabase error"},
+        200: {"description": "Resolved current user's display name"},
+        401: {"description": "Unauthorized or invalid token"},
         500: {"description": "Unexpected server error"},
     },
 )
-async def get_display_name_by_id(
-    payload: GetDisplayNameRequest,
+async def get_me(
     supabase: SupabaseClient = Depends(get_supabase),
-) -> dict:
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> CurrentUserProfileResponse:
     """
     PUBLIC_INTERFACE
-    Fetch display_name from public.profiles using the provided user_id.
-
-    Parameters:
-    - user_id: Supabase auth user id (UUID as string)
-
-    Returns:
-    - {"display_name": "<name or Anonymous>"} — Anonymous if profile not found or empty.
+    Resolve current user's display name:
+    - Determine auth user id from Authorization bearer token.
+    - Try public.profiles (id = user id) to read display_name.
+    - If not found, try user_metadata on the auth user (full_name/name/username).
+    - Fallback to 'Anonymous' when nothing is available.
     """
     try:
-        uid = (payload.user_id or "").strip()
-        if not uid:
-            raise HTTPException(status_code=400, detail="user_id is required")
+        user_id = await _resolve_current_user(supabase, authorization)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Unauthorized")
 
-        prof = (
-            supabase.table("profiles")
-            .select("display_name")
-            .eq("id", uid)
-            .limit(1)
-            .execute()
-        )
-        display_name = None
-        if prof.data:
-            display_name = (prof.data[0] or {}).get("display_name")
-        if not (isinstance(display_name, str) and display_name.strip()):
+        # Prefer public.profiles.display_name if available
+        src = "fallback"
+        display_name: Optional[str] = None
+
+        try:
+            prof = (
+                supabase.table("profiles")
+                .select("display_name")
+                .eq("id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if prof.data:
+                display_name = (prof.data[0] or {}).get("display_name")
+                if display_name and isinstance(display_name, str) and display_name.strip():
+                    src = "profiles"
+        except Exception:
+            # Ignore missing table or RLS issues; continue with metadata fallback
+            pass
+
+        # Fallback to user_metadata
+        if not display_name:
+            try:
+                user_res = supabase.auth.get_user(token=authorization.split()[1]) if authorization else None
+                user = getattr(user_res, "user", None) if user_res else None
+                meta = getattr(user, "user_metadata", None) or {}
+                for key in ("display_name", "full_name", "name", "username"):
+                    val = meta.get(key)
+                    if isinstance(val, str) and val.strip():
+                        display_name = val.strip()
+                        src = "metadata"
+                        break
+            except Exception:
+                # ignore
+                pass
+
+        if not display_name:
             display_name = "Anonymous"
-        return {"display_name": display_name}
+            src = "fallback"
+
+        return CurrentUserProfileResponse(user_id=str(user_id), display_name=display_name, source=src)
     except HTTPException:
         raise
     except Exception as e:
-        # Surface as 400 by default for DB/RLS/validation issues
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
