@@ -33,6 +33,8 @@ Signup does not accept a request-provided redirect URL. Configure redirect behav
 Core tables used by this backend:
 - public.projects (see assets/sql/projects_setup.sql)
 - public.work_item (see assets/sql/work_items_setup.sql)
+- public.work_item_comment (see assets/sql/work_item_comments_setup.sql)
+- public.profiles (see assets/sql/profiles_setup.sql) — used by GET /users/me to resolve display_name
 
 Optional:
 - public.tasks and public.bugs (legacy/minimal counts table; not required since work_item provides counts by item_type) — see assets/sql/tasks_bugs_setup.sql

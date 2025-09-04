@@ -19,9 +19,10 @@ This backend uses the official supabase-py SDK for authentication and database o
      1. assets/sql/projects_setup.sql
      2. assets/sql/work_items_setup.sql
      3. assets/sql/work_item_comments_setup.sql
-     4. assets/sql/profiles_setup.sql   <-- required for display_name near avatar
+     4. assets/sql/profiles_setup.sql   <-- required for display_name near avatar (/users/me)
      5. (Optional) assets/sql/tasks_bugs_setup.sql
    - Note: The automation RPC (public.run_sql) is not installed in your project (PGRST202), so run scripts manually via the dashboard.
+   - If you need a ready-to-paste snippet for profiles, see bugflow-backend/assets/sql/README_profiles_setup.md.
 
 4) Endpoints
    - POST /auth/signup (supabase-py: auth.sign_up)

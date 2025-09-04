@@ -47,11 +47,15 @@ RLS (development-permissive; tighten for production) is included in the scripts.
 1) Run SQL:
    - Open SQL Editor and run assets/sql/projects_setup.sql
    - Then run assets/sql/work_items_setup.sql
+   - Run assets/sql/work_item_comments_setup.sql
+   - Run assets/sql/profiles_setup.sql  <-- required for /users/me display_name
    - Optionally run assets/sql/tasks_bugs_setup.sql
 
 2) Verify:
    - public.projects exists with required columns & RLS policies.
    - public.work_item exists with composite PK (project_id, id), generated item_key, trigger for per-project id increment, and dev RLS policies.
+   - public.work_item_comment exists with dev RLS policies and id trigger.
+   - public.profiles exists with columns (id uuid pk, display_name text, updated_at timestamptz default now()), RLS enabled, and permissive dev policies for select/insert/update.
 
 3) Authentication > URL Configuration:
    - Site URL: your frontend URL (e.g., http://localhost:3000/)
