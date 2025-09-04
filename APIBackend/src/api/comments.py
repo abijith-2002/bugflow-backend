@@ -40,8 +40,15 @@ class Comment(BaseModel):
 class CreateCommentRequest(BaseModel):
     """Payload to create a new comment on a given work item."""
     body: str = Field(..., min_length=1, max_length=5000, description="Comment text content")
-    # Note: author_id is intentionally NOT accepted from the client for integrity.
-    # It will be derived from the authenticated user context (Authorization header / Supabase session).
+    # Accept author_id and author_display_name from client; if not provided, fall back to auth-derived values
+    author_id: Optional[str] = Field(
+        default=None,
+        description="Optional Supabase user id of the commenter. If omitted, resolved from Authorization header when possible.",
+    )
+    author_display_name: Optional[str] = Field(
+        default=None,
+        description="Optional display name of the commenter. If omitted, resolved server-side or falls back to 'Anonymous'.",
+    )
 
     @field_validator("body")
     @classmethod
@@ -156,7 +163,7 @@ async def list_comments(
     response_model=Comment,
     status_code=status.HTTP_201_CREATED,
     summary="Add a comment to a work item",
-    description="Create a new comment for a given work item. The author is derived from the authenticated user; the author's display name is resolved server-side.",
+    description="Create a new comment for a given work item. Accepts optional author_id and author_display_name in payload; if omitted, these are resolved from the authenticated user or fall back to 'Anonymous'.",
     responses={
         201: {"description": "Comment created"},
         400: {"description": "Validation or Supabase error"},
@@ -177,12 +184,12 @@ async def add_comment(
 
     Behavior:
     - Verifies the work item exists before inserting a comment (best-effort).
-    - Determines the current user based on Authorization: Bearer <token>.
-    - Fetches user's display name from Supabase user profile (user_metadata) or users table if present.
+    - Accepts optional author_id and author_display_name in the payload; when provided, these are used as-is.
+    - If optional fields are not provided, determines the current user based on Authorization: Bearer <token> and resolves display name.
     - Inserts into public.work_item_comment with (project_id, item_id, body, author_id, author_display_name).
     - Returns the inserted comment row.
 
-    If user info is missing or not resolvable, falls back to (author_id=None, author_display_name='Anonymous').
+    If user info is missing or not resolvable and not provided in payload, falls back to (author_id=None, author_display_name='Anonymous').
     """
     try:
         # Verify the work item exists (best-effort)
@@ -203,21 +210,28 @@ async def add_comment(
             # If select fails due to RLS or transient issues, proceed and let FK constraints handle it.
             pass
 
-        # Resolve current user and display name from Supabase
-        author_id, display_name = await _resolve_user_from_bearer_token(
+        # Resolve current user and display name from Supabase (used as fallback)
+        resolved_author_id, resolved_display_name = await _resolve_user_from_bearer_token(
             supabase=supabase,
             authorization=authorization,
+        )
+
+        # Honor client-provided values if present, otherwise use resolved fallbacks
+        effective_author_id = payload.author_id.strip() if isinstance(payload.author_id, str) and payload.author_id.strip() else resolved_author_id
+        effective_display_name = (
+            payload.author_display_name.strip()
+            if isinstance(payload.author_display_name, str) and payload.author_display_name.strip()
+            else resolved_display_name or "Anonymous"
         )
 
         insert_body = {
             "project_id": project_id,
             "item_id": id,
             "body": payload.body,
-            # Store both identifiers when possible
-            "author_display_name": display_name,
+            "author_display_name": effective_display_name,
         }
-        if author_id:
-            insert_body["author_id"] = author_id
+        if effective_author_id:
+            insert_body["author_id"] = effective_author_id
 
         # Insert comment
         resp = (
