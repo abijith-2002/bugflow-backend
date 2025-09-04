@@ -79,7 +79,8 @@ async def get_me(
     - If the optional 'user_id' query parameter is provided:
         * Validate it as a non-empty string.
         * Query public.profiles where id = user_id for display_name.
-        * If not found or display_name is blank, return 404 Profile not found.
+        * If a profile row exists but display_name is null/blank, return "Anonymous" with source="profiles".
+        * If no profile row exists, return 404 Profile not found.
         * Return payload with source='profiles'.
     - If 'user_id' is not provided:
         * Determine current auth user id from Authorization bearer token.
@@ -106,15 +107,25 @@ async def get_me(
                 # Map unexpected Supabase errors to 400 for client context
                 raise HTTPException(status_code=400, detail=str(e))
 
-            name = None
-            if prof and isinstance(prof.data, list) and prof.data:
-                candidate = (prof.data[0] or {}).get("display_name")
-                if isinstance(candidate, str) and candidate.strip():
-                    name = candidate.strip()
-
-            if not name:
-                # For GET with explicit user_id, return 404 when profile/display_name is not found
+            # Normalize response shape and determine if a profile row exists
+            rows = []
+            if prof is not None:
+                if isinstance(getattr(prof, "data", None), list):
+                    rows = prof.data or []
+                elif isinstance(getattr(prof, "data", None), dict):
+                    # Some setups may return a dict; wrap it for uniform handling
+                    rows = [prof.data]
+            if not rows:
+                # No profile row found for the given user id
                 raise HTTPException(status_code=404, detail="Profile not found")
+
+            # Extract display_name safely
+            candidate = (rows[0] or {}).get("display_name")
+            if isinstance(candidate, str) and candidate.strip():
+                name = candidate.strip()
+            else:
+                # Profile exists but display_name missing/blank -> return Anonymous with profiles source
+                name = "Anonymous"
 
             return CurrentUserProfileResponse(user_id=uid, display_name=name, source="profiles")
 
@@ -135,9 +146,13 @@ async def get_me(
                 .limit(1)
                 .execute()
             )
-            if prof.data:
-                display_name = (prof.data[0] or {}).get("display_name")
-                if display_name and isinstance(display_name, str) and display_name.strip():
+            rows = prof.data or []
+            if isinstance(rows, dict):
+                rows = [rows]
+            if rows:
+                dn = (rows[0] or {}).get("display_name")
+                if isinstance(dn, str) and dn.strip():
+                    display_name = dn.strip()
                     src = "profiles"
         except Exception:
             # Ignore missing table or RLS issues; continue with metadata fallback
@@ -164,7 +179,11 @@ async def get_me(
             display_name = "Anonymous"
             src = "fallback"
 
-        return CurrentUserProfileResponse(user_id=str(resolved_user_id), display_name=display_name, source=src)
+        return CurrentUserProfileResponse(
+            user_id=str(resolved_user_id),
+            display_name=display_name,
+            source=src,
+        )
     except HTTPException:
         raise
     except Exception as e:
