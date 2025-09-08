@@ -33,10 +33,10 @@ async def _require_valid_bearer_user(
         HTTPException(401): when header is missing, malformed, or token invalid.
     """
     if not authorization:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        raise HTTPException(status_code=401, detail="Authorization header missing")
     parts = authorization.split()
     if not (len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip()):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        raise HTTPException(status_code=401, detail="Invalid or malformed Authorization header")
     token = parts[1].strip()
     try:
         user_res = supabase.auth.get_user(token=token)
