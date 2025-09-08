@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Path, Response, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Path, Response
 from pydantic import BaseModel, Field, field_validator
 from supabase import Client as SupabaseClient
 
@@ -21,35 +21,6 @@ def get_supabase(request_settings=Depends(get_settings)) -> SupabaseClient:
         return provider.client()
     except ValueError as e:
         raise HTTPException(status_code=500, detail=f"Configuration error: {str(e)}")
-
-async def _require_valid_bearer_user(
-    supabase: SupabaseClient,
-    authorization: Optional[str],
-) -> str:
-    """
-    Validate Authorization: Bearer <jwt> header using Supabase and return user id.
-
-    Raises:
-        HTTPException(401): when header is missing, malformed, or token invalid.
-    """
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header missing")
-    parts = authorization.split()
-    if not (len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip()):
-        raise HTTPException(status_code=401, detail="Invalid or malformed Authorization header")
-    token = parts[1].strip()
-    try:
-        user_res = supabase.auth.get_user(token=token)
-        user = getattr(user_res, "user", None)
-        user_id = getattr(user, "id", None)
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-        return str(user_id)
-    except HTTPException:
-        raise
-    except Exception:
-        # Any SDK error should be treated as unauthorized for this protection
-        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 async def _select_projects_with_counts(supabase: SupabaseClient) -> list[dict]:
@@ -165,34 +136,25 @@ def _ignore_query_params(req: Request) -> None:
     summary="List projects",
     description=(
         "Fetch all projects from Supabase ordered by creation time (most recent first). "
-        "This endpoint ignores all query parameters; no filters are forwarded to Supabase. "
-        "Requires a valid Authorization bearer token."
+        "This endpoint ignores all query parameters; no filters are forwarded to Supabase."
     ),
     responses={
         200: {"description": "List of projects"},
-        401: {"description": "Unauthorized"},
         500: {"description": "Unexpected server error"},
     },
 )
 async def list_projects(
     request: Request,
     supabase: SupabaseClient = Depends(get_supabase),
-    authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> List[Project]:
     """
     PUBLIC_INTERFACE
     Return all projects with task and bug counts sourced via head=True count queries on public.work_item.
-
-    Authentication:
-    - Requires Authorization: Bearer <token>. Returns 401 if missing or invalid.
     """
     try:
-        # Enforce auth
-        _ = await _require_valid_bearer_user(supabase, authorization)
-
         _ignore_query_params(request)
         rows = await _select_projects_with_counts(supabase)
-
+      
         return [Project(**row) for row in rows]
     except HTTPException:
         raise

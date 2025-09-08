@@ -5,9 +5,8 @@ This backend uses the official supabase-py SDK for authentication and database o
 1) Configure environment
    - Copy .env.example to .env in bugflow-backend/APIBackend/
    - Set the following variables in .env:
-     - SUPABASE_URL (e.g., https://your-project-id.supabase.co)
-     - SUPABASE_ANON_KEY (Anon public API key from Project Settings -> API)
-   - Important: Do NOT use REACT_APP_* variables in the backend. Those are for the frontend only.
+     - SUPABASE_URL
+     - SUPABASE_ANON_KEY
 
 2) Configure Supabase Authentication
    - In Supabase Dashboard > Authentication > URL Configuration:
@@ -30,23 +29,13 @@ This backend uses the official supabase-py SDK for authentication and database o
    - POST /auth/login (supabase-py: auth.sign_in_with_password)
    - /projects and /work-items perform CRUD using supabase.table(...)
 
-5) Verifying authentication end-to-end
-   - Login: POST /auth/login with email/password created in Supabase; note the access_token from response.
-   - Call: GET /projects with header Authorization: Bearer <access_token>
-   - Expected:
-     * Valid token (from the same Supabase project configured in backend) => 200 OK with project list (possibly empty).
-     * Missing header => 401 Unauthorized ("Authorization header missing")
-     * Malformed header => 401 Unauthorized ("Invalid or malformed Authorization header")
-     * Invalid/expired token => 401 Unauthorized ("Unauthorized")
+5) Notes
+   - The backend uses supabase-py to interact with both Auth and PostgREST.
+   - Do not use REACT_APP_* vars in the backend.
+   - The backend does not accept a redirect_to field on signup; configure redirect behavior entirely in Supabase (Site URL and Redirect URLs). No SITE_URL is required by the backend.
+   - Email confirmation requirement is fully controlled by Supabase project settings. The backend forwards Supabase responses as-is.
 
 Troubleshooting
-- 401 Unauthorized from /projects:
-  * Ensure the request includes header: Authorization: Bearer <token>
-  * The token must be obtained from the same Supabase project as configured via SUPABASE_URL/SUPABASE_ANON_KEY in the backend.
-  * Verify APIBackend/.env is loaded (src/api/main.py loads APIBackend/.env by default). If you changed the path, set ENV_PATH accordingly.
-- 500 Configuration error:
-  * Ensure APIBackend/.env has SUPABASE_URL and SUPABASE_ANON_KEY (see .env.example).
-- 4xx from Supabase on data operations:
-  * Check table definitions, constraints, and RLS policies. Use assets/sql/*.sql scripts as source of truth.
-- PGRST202 errors from tooling:
-  * Execute SQL via the Supabase Dashboard; the helper RPC is not present by default.
+- 500 Configuration error: Ensure APIBackend/.env has SUPABASE_URL and SUPABASE_ANON_KEY (see .env.example).
+- 4xx from Supabase: Check table definitions, constraints, and RLS policies. Use assets/sql/*.sql scripts as source of truth.
+- PGRST202 errors from tooling: Execute SQL via the Supabase Dashboard; the helper RPC is not present by default.
