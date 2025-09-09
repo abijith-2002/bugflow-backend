@@ -33,6 +33,24 @@ app = FastAPI(
         {"name": "Comments", "description": "Work item comments management"},
     ],
 )
+# Augment OpenAPI with a global HTTP Bearer security scheme for JWT.
+# Routes may opt-in by specifying dependencies; this documents how to authorize in Swagger UI.
+if app.openapi_schema is None:
+    schema = app.openapi()
+else:
+    schema = app.openapi_schema
+components = schema.setdefault("components", {})
+security_schemes = components.setdefault("securitySchemes", {})
+security_schemes.setdefault(
+    "HTTPBearer",
+    {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Provide the Bearer token obtained from login.",
+    },
+)
+app.openapi_schema = schema
 
 # CORS for frontend consumption; tighten origins as needed via env in future
 app.add_middleware(

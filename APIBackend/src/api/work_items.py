@@ -145,9 +145,11 @@ async def list_work_items(
         500: {"description": "Unexpected server error"},
     },
 )
+
 async def create_work_item(
     payload: CreateWorkItemRequest,
     supabase: SupabaseClient = Depends(get_supabase),
+    _: None = Depends(require_auth),
 ) -> WorkItem:
     """
     Create a new unified work item. The ID generation is handled in the database trigger to ensure correct sequencing.
@@ -210,6 +212,7 @@ async def patch_work_item(
     id: int = Path(..., description="Numeric item id within the project"),
     payload: PatchWorkItemRequest = ...,
     supabase: SupabaseClient = Depends(get_supabase),
+    _: None = Depends(require_auth),
 ) -> WorkItem:
     """
     PUBLIC_INTERFACE
@@ -293,6 +296,7 @@ async def update_work_item_status(
     id: int = Path(..., description="Numeric item id within the project"),
     payload: UpdateWorkItemStatusRequest = ...,
     supabase: SupabaseClient = Depends(get_supabase),
+    _: None = Depends(require_auth),
 ) -> WorkItem:
     """
     PUBLIC_INTERFACE
@@ -374,6 +378,7 @@ async def delete_work_item(
     project_id: str = Path(..., description="UUID of the project"),
     id: int = Path(..., description="Numeric item id within the project"),
     supabase: SupabaseClient = Depends(get_supabase),
+    _: None = Depends(require_auth),
 ) -> Response:
     """
     PUBLIC_INTERFACE

@@ -7,6 +7,7 @@ from supabase import Client as SupabaseClient
 
 from .config import get_settings
 from .supabase_client import SupabaseClientProvider
+from .security import require_auth  # type: ignore
 
 router = APIRouter(prefix="/work-items", tags=["Comments"])
 
@@ -171,12 +172,14 @@ async def list_comments(
         500: {"description": "Unexpected server error"},
     },
 )
+
 async def add_comment(
     project_id: str = Path(..., description="UUID of the project"),
     id: int = Path(..., description="Numeric item id within the project"),
     payload: CreateCommentRequest = ...,
     supabase: SupabaseClient = Depends(get_supabase),
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
+    _: None = Depends(require_auth),
 ) -> Comment:
     """
     PUBLIC_INTERFACE

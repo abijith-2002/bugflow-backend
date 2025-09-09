@@ -6,6 +6,7 @@ from supabase import Client as SupabaseClient
 
 from .config import get_settings
 from .supabase_client import SupabaseClientProvider
+from .security import CurrentUser as _AuthUser  # type: ignore
 
 router = APIRouter(prefix="/users", tags=["Authentication"])
 
@@ -66,10 +67,12 @@ async def _resolve_current_user(
         500: {"description": "Unexpected server error"},
     },
 )
+
 async def get_me(
     supabase: SupabaseClient = Depends(get_supabase),
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
     user_id: Optional[str] = None,
+    auth_user: Optional[_AuthUser] = Depends(lambda: None),
 ) -> CurrentUserProfileResponse:
     """
     PUBLIC_INTERFACE
@@ -129,8 +132,13 @@ async def get_me(
 
             return CurrentUserProfileResponse(user_id=uid, display_name=name, source="profiles")
 
-        # Otherwise, behave like previous implementation (current user resolution)
-        resolved_user_id = await _resolve_current_user(supabase, authorization)
+        # Otherwise, require a valid JWT: if dependency not injected, fall back to header resolution.
+        resolved_user_id = None
+        if auth_user is not None:
+            resolved_user_id = auth_user.user_id
+        if not resolved_user_id:
+            # Fallback to previous method (supports Supabase token introspection when using Supabase JWTs)
+            resolved_user_id = await _resolve_current_user(supabase, authorization)
         if not resolved_user_id:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
