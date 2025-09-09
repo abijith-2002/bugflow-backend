@@ -14,6 +14,7 @@ Required environment variables
 Optional (for JWT validation of bearer tokens used by protected endpoints):
 - JWT_SECRET_KEY (secret used to verify tokens)
 - JWT_ALGORITHM (e.g., HS256)
+- JWT_EXPECTED_AUDIENCE (optional; if provided, aud must match; if omitted, audience validation is disabled)
 
 Quick start
 - Copy .env.example to .env in this directory and set SUPABASE_URL and SUPABASE_ANON_KEY.

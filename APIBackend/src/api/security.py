@@ -10,6 +10,7 @@ This module provides:
 All protected endpoints should use one of these dependencies in their signature.
 """
 from typing import Optional
+import os
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -100,12 +101,24 @@ def _decode_token(token: str, settings: _JWTSettings) -> dict:
     - Returns decoded claims dict.
     """
     try:
-        claims = jwt.decode(
-            token,
-            settings.secret_key,
-            algorithms=[settings.algorithm],
-            options={"require": [], "verify_signature": True},
-        )
+        # Disable audience validation by default since Supabase access tokens used by the
+        # frontend typically don't include an aud matching our backend. If your use case
+        # requires audience enforcement, set JWT_EXPECTED_AUDIENCE env var accordingly.
+        expected_aud = (os.getenv("JWT_EXPECTED_AUDIENCE") or "").strip()
+        decode_kwargs = {
+            "key": settings.secret_key,
+            "algorithms": [settings.algorithm],
+            "options": {
+                "require": [],
+                "verify_signature": True,
+                # Explicitly disable audience verification unless expected audience is provided.
+                "verify_aud": bool(expected_aud),
+            },
+        }
+        if expected_aud:
+            decode_kwargs["audience"] = expected_aud
+
+        claims = jwt.decode(token, **decode_kwargs)
         if not isinstance(claims, dict):
             raise jwt.InvalidTokenError("Invalid token payload")
         return claims

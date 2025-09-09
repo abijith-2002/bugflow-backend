@@ -5,6 +5,7 @@ This backend enforces Bearer JWT authentication on protected endpoints using PyJ
 Environment variables (set in APIBackend/.env):
 - JWT_SECRET_KEY: Secret key used to verify tokens
 - JWT_ALGORITHM: Algorithm used to sign/verify tokens (e.g., HS256)
+- JWT_EXPECTED_AUDIENCE (optional): If set, the backend will enforce this aud claim. If not set, audience validation is disabled to support Supabase access tokens commonly used by the frontend.
 
 How it works:
 - The dependency src/api/security.py provides:
