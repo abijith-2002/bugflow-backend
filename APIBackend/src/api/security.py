@@ -2,7 +2,7 @@
 Security utilities and dependencies for JWT-based authentication.
 
 This module provides:
-- Settings integration for JWT_SECRET_KEY and JWT_ALGORITHM loaded from environment.
+- Lazy environment checks so the app doesn't crash at import/startup if JWT envs are missing.
 - A reusable FastAPI dependency `get_current_user` that validates the Bearer token
   using the `jwt` (PyJWT) library, and returns a simple `CurrentUser` model.
 - A `require_auth` dependency to enforce authentication without returning the user information.
@@ -17,27 +17,29 @@ from pydantic import BaseModel, Field
 
 import jwt  # PyJWT
 
-from .config import get_settings  # type: ignore
+# Note: Do not import settings at module import in a way that forces env validation.
+# from .config import get_settings  # Avoid mandatory loading here
+
 
 # PUBLIC_INTERFACE
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer(auto_error=True))) -> dict:
     """Validate a Bearer JWT and return its claims.
 
     Uses JWT_SECRET_KEY and JWT_ALGORITHM from environment variables to verify the token
-    signature via PyJWT. Raises 401 on any validation failure.
+    signature via PyJWT. Raises 401 on any validation failure, including missing envs.
 
     Returns:
         dict: Decoded claims payload.
     """
-    # Load env values here to avoid importing config fields that may not include JWT vars.
     import os
 
     secret = (os.getenv("JWT_SECRET_KEY") or "").strip()
     algorithm = (os.getenv("JWT_ALGORITHM") or "").strip()
     if not secret or not algorithm:
+        # Defer error to request-time so public endpoints can load without env present.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Auth configuration missing",
+            detail="Authentication is not configured",
         )
 
     token = credentials.credentials or ""
@@ -58,31 +60,23 @@ class _JWTSettings(BaseModel):
     algorithm: str = Field(..., description="JWT signing/verification algorithm (e.g., HS256)")
 
 
-def _load_jwt_settings() -> _JWTSettings:
+def _load_jwt_settings() -> Optional[_JWTSettings]:
     """
-    Load JWT settings from environment via shared settings loader.
+    Load JWT settings from environment in a lazy, non-throwing manner.
 
-    Required environment variables:
-    - JWT_SECRET_KEY
-    - JWT_ALGORITHM
+    Returns:
+        _JWTSettings if both env vars are present; otherwise None.
     """
-    # Reuse existing get_settings to ensure dotenv is loaded; read env directly for JWT vars
-    # because the existing Settings class does not yet include JWT fields.
     import os
 
-    secret = (os.getenv("JWT_SECRET") or "").strip()
+    # Correctly read JWT_SECRET_KEY; previously used 'JWT_SECRET' which was inconsistent.
+    secret = (os.getenv("JWT_SECRET_KEY") or "").strip()
     alg = (os.getenv("JWT_ALGORITHM") or "").strip()
 
-    missing = []
-    if not secret:
-        missing.append("JWT_SECRET_KEY")
-    if not alg:
-        missing.append("JWT_ALGORITHM")
-    if missing:
-        raise ValueError(
-            f"Missing required environment variables: {', '.join(missing)}. "
-            "Set them in APIBackend/.env (see .env.example)."
-        )
+    if not secret or not alg:
+        # Do not raise here; defer to request-time.
+        return None
+
     return _JWTSettings(secret_key=secret, algorithm=alg)
 
 
@@ -106,7 +100,6 @@ def _decode_token(token: str, settings: _JWTSettings) -> dict:
     - Returns decoded claims dict.
     """
     try:
-        # Note: options include verifying exp by default; PyJWT will raise ExpiredSignatureError if expired
         claims = jwt.decode(
             token,
             settings.secret_key,
@@ -121,7 +114,6 @@ def _decode_token(token: str, settings: _JWTSettings) -> dict:
     except jwt.InvalidTokenError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {str(e)}")
     except Exception:
-        # Generic failure
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
@@ -133,31 +125,26 @@ async def get_current_user(
 
     This dependency:
     - Extracts the Bearer token from the Authorization header.
-    - Loads JWT_SECRET_KEY and JWT_ALGORITHM from environment.
+    - Lazily loads JWT_SECRET_KEY and JWT_ALGORITHM from environment.
     - Decodes and validates the token using PyJWT.
     - Returns a CurrentUser built from claims (sub and email when present).
 
     Raises:
-    - 401 Unauthorized on missing/invalid/expired tokens.
+    - 401 Unauthorized on missing/invalid/expired tokens or missing env configuration.
 
     Usage:
     - Add `current_user: CurrentUser = Depends(get_current_user)` to protected endpoints.
     """
-    # Ensure base settings load (dotenv handled in app startup). Not used directly here, but
-    # calling get_settings ensures global env loading side-effects remain intact.
-    try:
-        _ = get_settings()
-    except Exception:
-        # Even if Supabase settings are missing, JWT may still need to work; ignore here.
-        pass
-
     settings = _load_jwt_settings()
+    if settings is None:
+        # Missing secret/algorithm: treat as unauthorized for protected endpoints.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication is not configured")
+
     token = credentials.credentials or ""
     claims = _decode_token(token, settings)
 
     sub = str(claims.get("sub") or "")
     if not sub:
-        # Some JWTs use 'user_id' or 'uid'; fallback checks
         for alt in ("user_id", "uid", "id"):
             if claims.get(alt):
                 sub = str(claims[alt])
