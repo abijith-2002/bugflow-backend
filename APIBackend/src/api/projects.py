@@ -7,7 +7,6 @@ from supabase import Client as SupabaseClient
 
 from .config import get_settings
 from .supabase_client import SupabaseClientProvider
-from .security import require_auth  # type: ignore
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -176,11 +175,9 @@ async def list_projects(
         500: {"description": "Unexpected server error"},
     },
 )
-
 async def create_project(
     payload: CreateProjectRequest,
     supabase: SupabaseClient = Depends(get_supabase),
-    _: None = Depends(require_auth),
 ) -> Project:
     """
     Create a new project. Counts default to zero for new projects.
@@ -236,7 +233,6 @@ async def create_project(
 async def delete_project(
     id: str = Path(..., description="Project UUID"),
     supabase: SupabaseClient = Depends(get_supabase),
-    _: None = Depends(require_auth),
 ) -> Response:
     """
     PUBLIC_INTERFACE
