@@ -2,7 +2,7 @@
 Security utilities and dependencies for JWT-based authentication.
 
 This module provides:
-- Settings integration for JWT_SECRET and JWT_ALGORITHM loaded from environment.
+- Settings integration for JWT_SECRET_KEY and JWT_ALGORITHM loaded from environment.
 - A reusable FastAPI dependency `get_current_user` that validates the Bearer token
   using the `jwt` (PyJWT) library, and returns a simple `CurrentUser` model.
 - A `require_auth` dependency to enforce authentication without returning the user information.
@@ -23,7 +23,7 @@ from .config import get_settings  # type: ignore
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer(auto_error=True))) -> dict:
     """Validate a Bearer JWT and return its claims.
 
-    Uses JWT_SECRET and JWT_ALGORITHM from environment variables to verify the token
+    Uses JWT_SECRET_KEY and JWT_ALGORITHM from environment variables to verify the token
     signature via PyJWT. Raises 401 on any validation failure.
 
     Returns:
@@ -32,7 +32,7 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(HTTPB
     # Load env values here to avoid importing config fields that may not include JWT vars.
     import os
 
-    secret = (os.getenv("JWT_SECRET") or "").strip()
+    secret = (os.getenv("JWT_SECRET_KEY") or "").strip()
     algorithm = (os.getenv("JWT_ALGORITHM") or "").strip()
     if not secret or not algorithm:
         raise HTTPException(
@@ -63,7 +63,7 @@ def _load_jwt_settings() -> _JWTSettings:
     Load JWT settings from environment via shared settings loader.
 
     Required environment variables:
-    - JWT_SECRET
+    - JWT_SECRET_KEY
     - JWT_ALGORITHM
     """
     # Reuse existing get_settings to ensure dotenv is loaded; read env directly for JWT vars
@@ -75,7 +75,7 @@ def _load_jwt_settings() -> _JWTSettings:
 
     missing = []
     if not secret:
-        missing.append("JWT_SECRET")
+        missing.append("JWT_SECRET_KEY")
     if not alg:
         missing.append("JWT_ALGORITHM")
     if missing:
@@ -133,7 +133,7 @@ async def get_current_user(
 
     This dependency:
     - Extracts the Bearer token from the Authorization header.
-    - Loads JWT_SECRET and JWT_ALGORITHM from environment.
+    - Loads JWT_SECRET_KEY and JWT_ALGORITHM from environment.
     - Decodes and validates the token using PyJWT.
     - Returns a CurrentUser built from claims (sub and email when present).
 

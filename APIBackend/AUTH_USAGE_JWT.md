@@ -3,7 +3,7 @@
 This backend enforces Bearer JWT authentication on protected endpoints using PyJWT.
 
 Environment variables (set in APIBackend/.env):
-- JWT_SECRET: Secret key used to verify tokens
+- JWT_SECRET_KEY: Secret key used to verify tokens
 - JWT_ALGORITHM: Algorithm used to sign/verify tokens (e.g., HS256)
 
 How it works:
@@ -32,5 +32,5 @@ Client usage:
 - Swagger UI now shows the HTTP Bearer security scheme. Use the "Authorize" button to set your token.
 
 Notes:
-- The token is validated using PyJWT with the configured secret and algorithm.
+- The token is validated using PyJWT with the configured secret (JWT_SECRET_KEY) and algorithm (JWT_ALGORITHM).
 - The subject is read from "sub" claim by default; fallbacks: "user_id", "uid", or "id".
