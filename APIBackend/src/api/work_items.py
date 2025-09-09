@@ -7,6 +7,7 @@ from supabase import Client as SupabaseClient
 
 from .config import get_settings
 from .supabase_client import SupabaseClientProvider
+from .security import require_auth  # type: ignore
 
 router = APIRouter(prefix="/work-items", tags=["Work Items"])
 

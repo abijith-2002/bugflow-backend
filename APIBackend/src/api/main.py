@@ -67,6 +67,19 @@ def health_check():
     """Return service health."""
     return {"message": "Healthy"}
 
+# PUBLIC_INTERFACE
+@app.get(
+    "/docs/websocket-usage",
+    tags=["Health"],
+    summary="WebSocket usage help",
+    description="This API does not expose WebSocket routes. Real-time updates are managed by Supabase Realtime or polling.",
+)
+def websocket_usage_help():
+    """Provide project-level note about real-time connections for API docs completeness."""
+    return {
+        "websocket": "No WebSocket endpoints in this service. Use Supabase Realtime or client polling."
+    }
+
 # Register routers
 app.include_router(auth_router)
 app.include_router(projects_router)
