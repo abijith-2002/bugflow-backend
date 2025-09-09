@@ -19,6 +19,38 @@ import jwt  # PyJWT
 
 from .config import get_settings  # type: ignore
 
+# PUBLIC_INTERFACE
+async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer(auto_error=True))) -> dict:
+    """Validate a Bearer JWT and return its claims.
+
+    Uses JWT_SECRET and JWT_ALGORITHM from environment variables to verify the token
+    signature via PyJWT. Raises 401 on any validation failure.
+
+    Returns:
+        dict: Decoded claims payload.
+    """
+    # Load env values here to avoid importing config fields that may not include JWT vars.
+    import os
+
+    secret = (os.getenv("JWT_SECRET") or "").strip()
+    algorithm = (os.getenv("JWT_ALGORITHM") or "").strip()
+    if not secret or not algorithm:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Auth configuration missing",
+        )
+
+    token = credentials.credentials or ""
+    try:
+        claims = jwt.decode(token, secret, algorithms=[algorithm])
+        if not isinstance(claims, dict):
+            raise jwt.InvalidTokenError("Invalid token payload")
+        return claims
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {str(e)}")
+
 
 class _JWTSettings(BaseModel):
     """Internal helper model for JWT config."""

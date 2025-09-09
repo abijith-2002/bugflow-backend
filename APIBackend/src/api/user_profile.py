@@ -7,7 +7,9 @@ from supabase import Client as SupabaseClient
 from .config import get_settings
 from .supabase_client import SupabaseClientProvider
 
-router = APIRouter(prefix="/users", tags=["Authentication"])
+from .security import require_auth
+
+router = APIRouter(prefix="/users", tags=["Authentication"], dependencies=[Depends(require_auth)])
 
 def get_supabase(settings=Depends(get_settings)) -> SupabaseClient:
     """PUBLIC_INTERFACE: Provide supabase client from settings."""

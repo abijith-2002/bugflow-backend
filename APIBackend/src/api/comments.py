@@ -8,7 +8,9 @@ from supabase import Client as SupabaseClient
 from .config import get_settings
 from .supabase_client import SupabaseClientProvider
 
-router = APIRouter(prefix="/work-items", tags=["Comments"])
+from .security import require_auth
+
+router = APIRouter(prefix="/work-items", tags=["Comments"], dependencies=[Depends(require_auth)])
 
 
 def get_supabase(settings=Depends(get_settings)) -> SupabaseClient:
